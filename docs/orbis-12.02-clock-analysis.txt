@@ -1,0 +1,203 @@
+======================================================================
+ORBIS 12.020 KERNEL - FULL GPU/CPU CLOCK DOCUMENTATION
+======================================================================
+
+Source: Orbis kernel ELF 12.020 (Jan 23 2025, Build J02688428)
+Platform: FreeBSD-based, x86-64
+Analyzed by: rmuxnet
+
+============================================================
+GPU SCLK DPM TABLE (at file offset 0x814b70)
+============================================================
+Stored in 10kHz units. Table contains multiple profiles/modes
+with different SCLK targets:
+
+  Entry 0:  80000 = 800 MHz  (Liverpool max / Gladius base mode)
+  Entry 1:  60952 = 610 MHz  (mid-level DPM)
+  Entry 2:  60952 = 610 MHz  (mid-level DPM)
+  Entry 3:  80000 = 800 MHz  (Liverpool max)
+  Entry 4:  80000 = 800 MHz  (Liverpool max)
+  Entry 5:  71111 = 711 MHz  (DPM level)
+  Entry 6:  71111 = 711 MHz  (DPM level)
+  Entry 7:  67368 = 674 MHz  (DPM level)
+  Entry 8:  91100 = 911 MHz  (Gladius Neo mode max)
+  Entry 9:  85333 = 853 MHz  (Gladius high DPM)
+  Entry 10: 71111 = 711 MHz  (DPM level)
+  Entry 11: 80000 = 800 MHz  (base)
+  Entry 12: 91100 = 911 MHz  (Gladius Neo mode max)
+  Entry 13: 80000 = 800 MHz  (base)
+  Entry 14: 98461 = 985 MHz  (!! undocumented boost)
+  Entry 15: 67368 = 674 MHz  (DPM level)
+
+NOTE: Entry 14 shows 985 MHz - ABOVE the documented 911 MHz
+Neo mode maximum. Could be thermal headroom, debug/test state,
+or unreleased boost mode.
+
+============================================================
+MEMORY CLOCK (MCLK) CONFIGURATION
+============================================================
+From memclk config code (get_boot_memclk / get_current_memclk):
+
+Liverpool (Base PS4 / Slim / Fat):
+  Primary:   5500 MT/s effective (1375 MHz base GDDR5)
+  Alternate: 5518 MT/s effective (1379.5 MHz base)
+  
+Gladius (PS4 Pro):
+  Primary:   6800 MT/s effective (1700 MHz base GDDR5)
+  Alternate: 6840 MT/s effective (1710 MHz base)
+
+Memory clock is FIXED - no DVFS. Set by firmware at boot.
+The alternate values are flag-dependent (SKU variant or test).
+
+============================================================
+CPU FREQUENCY (hwpstate driver)
+============================================================
+Driver: sys/x86/cpufreq/hwpstate.c
+P-state MSRs: 0xC0010064 - 0xC0010067 (PstateDef0-3)
+
+Liverpool (Base PS4):
+  All cores: 1594 MHz (single P-state, no scaling)
+  
+Gladius (PS4 Pro):
+  Base mode:  1594/1600 MHz (all 8 cores active)
+  Neo mode:   2130 MHz (boosted for Neo-aware titles)
+  
+Neo mode toggled via 'neomode_switch' sysctl.
+Kernel exposes:
+  - cpufreq.lowest - minimum allowed frequency
+  - cpufreq.verbose - debug logging
+  - cpufreq_levels_changed - event notification
+  - cpu/cpufreq - sysctl tree
+
+============================================================
+NEO MODE
+============================================================
+Sysctl: 'neomode' / 'neomode_switch'
+Description: 'Switch neo mode'
+
+When a Neo-aware game launches on PS4 Pro:
+  CPU: 1600 MHz -> 2130 MHz
+  GPU: 800 MHz -> 911 MHz  
+  MCLK: 5500 MT/s -> 6800 MT/s
+
+Affects:
+  - CPU P-state selection (hwpstate driver)
+  - GPU SCLK DPM target (gbase driver)
+  - Memory controller configuration
+
+Related:
+  - neomode_switch (sysctl handler)
+  - cpufreq_pre_change / cpufreq_post_change
+  - cpufreq_levels_changed
+
+============================================================
+GPU MONITORING / TELEMETRY
+============================================================
+GRBM_STATUS registers (standard GCN):
+  GRBM_STATUS      (0x8010) - main GPU busy status
+  GRBM_STATUS2     (0x8008) - additional status
+  GRBM_STATUS_SE0  - shader engine 0 status
+  GRBM_STATUS_SE1  - shader engine 1 status
+  GRBM_STATUS_SE2  - shader engine 2 status
+
+Liverpool telemetry system:
+  - 'Liverpool telemetry' - GPU telemetry subsystem
+  - 'enable_telemetry' - enable/disable
+  - 'liverpool_icc_max' - max ICC current
+  - 'icc_available' - available current headroom
+  - 'get_icc_max' - query max current
+
+GPU driver components:
+  - GnmDriver.sprx - userspace GPU driver
+  - GnmDriver_sys.sprx - kernel GPU driver
+  - gbase_enable_mgcg_for_gladius - Gladius clock gating
+  - gbase_disable_mgcg_for_gladius - disable CG
+  - gbasevideomem - video memory management
+
+Thermal monitoring:
+  - thermal settings
+  - thermal zone temperature
+  - thermal_flags
+  - thermal constant 1/2 for passive cooling
+  - thermal sampling period for passive cooling
+  - monitor polling rate
+
+============================================================
+GPU USAGE REPORTING (for Linux implementation)
+============================================================
+On standard GCN/CIK hardware, GPU usage is derived from
+GRBM_STATUS (mmio 0x8010). The register contains busy bits:
+
+  Bit 31: GUI_ACTIVE (any graphics work active)
+  Bit 30: TA_BUSY
+  Bit 29: GDS_BUSY
+  Bit 28: VGT_BUSY
+  Bit 27: IA_BUSY
+  Bit 26: SX_BUSY
+  Bit 25: SPI_BUSY
+  Bit 24: BCI_BUSY
+  Bit 23: SC_BUSY
+  Bit 22: PA_BUSY
+  Bit 21: DB_BUSY
+  Bit 20: CP_BUSY
+  Bit 19: CB_BUSY
+  ...
+
+GPU utilization can be calculated by polling GUI_ACTIVE over
+time intervals. The amdgpu driver already has this via
+amdgpu_pm_info / gpu_busy_percent sysfs on cards with
+PowerPlay. For Liverpool/Gladius without PowerPlay, a simple
+GRBM_STATUS polling approach would work.
+
+============================================================
+ADDITIONAL FINDINGS
+============================================================
+Build: W:\Build\J02688428\sys\freebsd\...
+RTC: sys/dev/scesb/rtc/rtc.c (Southbridge RTC)
+  - set_extra_clock
+  - ssb_rtc_init_exclock
+
+Power management:
+  - 'Quiet 2.0' - fan/noise management mode
+  - power_sleep / power_on / power_off
+  - power_state_change / power_notif_hook
+  - power_button_state / power_suspend
+
+GPU fault handling:
+  - GPU_FAULT_ASYNC
+  - GPU_HP3D_TIMEOUT_ASYNC
+  - GPU_SUBMITDONE_TIMEOUT_ASYNC
+  - GPU_BREAK_ASYNC
+  - GPU_FAULT_PAGE_FAULT_ASYNC
+
+VBIOS codenames (from ROM dumps):
+  - ThJStarsha  = Liverpool (base PS4 fat, Aeolia)
+  - ThPStarsha  = Liverpool (base PS4 phat variant)
+  - KgStarsha2  = Gladius/Neo (PS4 Pro)
+  - GLRoma      = Gladius Roma (PS4 Pro variant/slim?)
+  
+All VBIOS confirm GDDR5 memory type.
+ATOMBIOS version: VER014.085.000.017-020
+
+============================================================
+GPU USAGE IMPLEMENTATION PLAN (for Linux)
+============================================================
+Current state: gpu_busy_percent sysfs returns -EOPNOTSUPP on
+Liverpool/Gladius because kv_dpm_read_sensor() doesn't handle
+AMDGPU_PP_SENSOR_GPU_LOAD.
+
+Implementation approach:
+  1. Add a periodic GRBM_STATUS poller (workqueue, ~100ms interval)
+  2. Sample bit 31 (GUI_ACTIVE) each tick
+  3. Calculate percentage over a sliding window
+  4. Expose via AMDGPU_PP_SENSOR_GPU_LOAD in kv_dpm_read_sensor()
+
+Register: GRBM_STATUS (mmio 0x8010 on CIK)
+  Bit 31: GUI_ACTIVE - set when any GFX work is active
+  
+This is the same approach used by radeontop (userspace) and
+the Orbis kernel's own telemetry system.
+
+Alternative: Use RLC_GPU_CLOCK_COUNT_SPM and RLC_GPU_BUSY_COUNT
+registers if available on Liverpool/Gladius. These give hardware-
+level busy counters without needing software polling.

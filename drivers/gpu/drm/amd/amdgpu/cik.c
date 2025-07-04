@@ -2588,6 +2588,23 @@ static int cik_common_hw_init(struct amdgpu_ip_block *ip_block)
 	    adev->asic_type == CHIP_GLADIUS)
 		liverpool_clk_force_max(adev);
 
+	/*
+	 * PS4 APUs have no AtomBIOS to populate default clock values.
+	 * Memory clock is fixed by firmware at boot (no MCLK DVFS) and
+	 * SCLK is forced to max above.  Set the defaults so userspace
+	 * queries (AMDGPU_INFO) report correct values.
+	 *
+	 * Liverpool: SCLK 800 MHz, MCLK 1375 MHz (GDDR5 5500 MT/s)
+	 * Gladius:   SCLK 911 MHz, MCLK 1700 MHz (GDDR5 6800 MT/s)
+	 */
+	if (adev->asic_type == CHIP_LIVERPOOL) {
+		adev->clock.default_sclk = 80000;
+		adev->clock.default_mclk = 137500;
+	} else if (adev->asic_type == CHIP_GLADIUS) {
+		adev->clock.default_sclk = 91100;
+		adev->clock.default_mclk = 170000;
+	}
+
 	return 0;
 }
 

@@ -15,7 +15,6 @@
 #include <asm/ps4.h>
 #include <asm/delay.h>
 #include <asm/apic.h>
-#include <linux/io.h>
 
 /* The PS4 southbridge (Aeolia) has an EMC timer that ticks at 32.768kHz,
  * which seems to be an appropriate clock reference for calibration. Both TSC
@@ -33,35 +32,27 @@ static __init inline void emctimer_write32(unsigned int reg, u32 val)
 	iowrite32(val, emc_timer + reg);
 }
 
-static __init bool emctimer_read(u32 *value)
+static __init inline u32 emctimer_read(void)
 {
 	u32 t1, t2;
-	int tries;
-
 	t1 = emctimer_read32(EMC_TIMER_VALUE);
-	for (tries = 0; tries < 10000; tries++) {
+	while (1) {
 		t2 = emctimer_read32(EMC_TIMER_VALUE);
-		if (t1 == t2) {
-			*value = t1;
-			return true;
-		}
+		if (t1 == t2)
+			return t1;
 		t1 = t2;
 	}
-
-	*value = t1;
-	return false;
 }
 
 static __init unsigned long ps4_measure_tsc_freq(void)
 {
 	unsigned long ret = 0;
-	u32 now;
 	u32 t1, t2;
 	u64 tsc1, tsc2;
 
 	// This is part of the Aeolia pcie device, but it's too early to
 	// do this in a driver.
-	emc_timer = early_ioremap(EMC_TIMER_BASE, 0x100);
+	emc_timer = ioremap(EMC_TIMER_BASE, 0x100);
 	if (!emc_timer)
 		goto fail;
 
@@ -73,20 +64,10 @@ static __init unsigned long ps4_measure_tsc_freq(void)
 	emctimer_write32(0x00, emctimer_read32(0x00) | 0x01);
 	emctimer_write32(0x84, emctimer_read32(0x84) | 0x01);
 
-	if (!emctimer_read(&t1)) {
-		pr_warn("EMC timer did not stabilize.\n");
-		goto fail;
-	}
+	t1 = emctimer_read();
 	tsc1 = tsc2 = rdtsc();
 
-	for (;;) {
-		if (!emctimer_read(&now)) {
-			pr_warn("EMC timer did not stabilize.\n");
-			goto fail;
-		}
-		if (now != t1)
-			break;
-
+	while (emctimer_read() == t1) {
 		// 0.1s timeout should be enough
 		tsc2 = rdtsc();
 		if ((tsc2 - tsc1) > (PS4_DEFAULT_TSC_FREQ/10)) {
@@ -97,35 +78,15 @@ static __init unsigned long ps4_measure_tsc_freq(void)
 	pr_info("EMC timer started in %lld TSC ticks\n", tsc2 - tsc1);
 
 	// Wait for a tick boundary
-	if (!emctimer_read(&t1)) {
-		pr_warn("EMC timer did not stabilize.\n");
-		goto fail;
-	}
-	do {
-		if (!emctimer_read(&t2)) {
-			pr_warn("EMC timer did not stabilize.\n");
-			goto fail;
-		}
-	} while (t2 == t1);
+	t1 = emctimer_read();
+	while ((t2 = emctimer_read()) == t1);
 	tsc1 = rdtsc();
 
 	// Wait for 1024 ticks to elapse (31.25ms)
 	// We don't need to wait very long, as we are looking for transitions.
 	// At this value, a TSC uncertainty of ~50 ticks corresponds to 1ppm of
 	// clock accuracy.
-	u64 deadline = rdtsc() + PS4_DEFAULT_TSC_FREQ / 5; /* 200ms hard cap */
-	for (;;) {
-		if (!emctimer_read(&now)) {
-			pr_warn("EMC timer did not stabilize.\n");
-			goto fail;
-		}
-		if ((now - t2) >= 1024)
-			break;
-		if (rdtsc() > deadline) {
-			pr_warn("EMC timer 1024-tick wait timed out.\n");
-			goto fail;
-		}
-	}
+	while ((emctimer_read() - t2) < 1024);
 	tsc2 = rdtsc();
 
 	// TSC rate is 32 times the elapsed time
@@ -134,7 +95,7 @@ static __init unsigned long ps4_measure_tsc_freq(void)
 	pr_info("Calibrated TSC frequency: %ld kHz\n", ret);
 fail:
 	if (emc_timer) {
-		early_iounmap(emc_timer, 0x100);
+		iounmap(emc_timer);
 		emc_timer = NULL;
 	}
 	return ret;
