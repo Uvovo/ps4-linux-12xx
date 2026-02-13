@@ -1563,6 +1563,10 @@ static uint32_t amdgpu_device_get_vbios_flags(struct amdgpu_device *adev)
 	if (hweight32(adev->aid_mask) && amdgpu_passthrough(adev))
 		return AMDGPU_VBIOS_OPTIONAL;
 
+	/* PS4 Pro has no ROM BAR; treat VBIOS as optional */
+	if (adev->pdev->device == 0x9924)
+		return AMDGPU_VBIOS_OPTIONAL;
+
 	return 0;
 }
 
@@ -1919,6 +1923,9 @@ bool amdgpu_device_need_post(struct amdgpu_device *adev)
 	if (flags & AMDGPU_VBIOS_SKIP)
 		return false;
 	if ((flags & AMDGPU_VBIOS_OPTIONAL) && !adev->bios)
+		return false;
+	/* PS4 Pro: no BIOS at all — never attempt GPU post */
+	if (adev->pdev->device == 0x9924 && !adev->bios)
 		return false;
 
 	if (amdgpu_passthrough(adev)) {
@@ -4406,6 +4413,15 @@ int amdgpu_device_init(struct amdgpu_device *adev,
 		adev->asic_type = amdgpu_force_asic_type;
 	else
 		adev->asic_type = flags & AMD_ASIC_MASK;
+
+	/* PS4 Pro semi-custom Polaris10: no ROM BAR, no display output.
+	 * Flag as APU so VBIOS ROM BAR read is skipped and PCIe atomics
+	 * use the internal path. Must be set before VBIOS / pcie init. */
+	if (adev->pdev->device == 0x9924) {
+		adev->flags |= AMD_IS_APU;
+		dev_info(adev->dev,
+			 "PS4 Pro GPU (0x9924): enabling no-ROM-BAR mode\n");
+	}
 
 	adev->usec_timeout = AMDGPU_MAX_USEC_TIMEOUT;
 	if (amdgpu_emu_mode == 1)
