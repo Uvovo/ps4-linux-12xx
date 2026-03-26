@@ -29,7 +29,7 @@ jobs:
 
       - name: Set SUID to tar binary
         run: sudo chown root /bin/tar && sudo chmod u+s /bin/tar
-      
+
       - name: Download Dockerfile
         run: |
          curl -fL https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/Dockerfile -o Dockerfile
@@ -45,7 +45,7 @@ jobs:
           key: ${{ runner.os }}-docker-${{ hashFiles('**/Dockerfile') }}
           restore-keys: |
             ${{ runner.os }}-docker-
-      
+
       - name: Restore Cache of Github Workspace
         uses: actions/cache/restore@v4
         id: cache-restore-workspace
@@ -81,14 +81,14 @@ jobs:
         run: |
           cd kernel-source-host
           git config --global --add safe.directory ${{ github.workspace }}/kernel-source-host
-          git remote set-url origin https://github.com/${{ github.repository }}
+          git remote set-url origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
           git fetch --depth 1 origin ${{ github.ref }}
           git reset --hard FETCH_HEAD
           git clean -fdx
 
       - name: Move .github directory to workspace
         run: mv kernel-source-host/.github ./.github || true
-      
+
       - name: Build Docker image with cache
         run: |
           mkdir -p /tmp/.buildx-cache
@@ -99,7 +99,7 @@ jobs:
             --tag kernel-linux-ps4:latest \
             --load \
             .
-      
+
       - name: Setup compile error problem-matching for kernel compilation
         run: echo "::add-matcher::.github/problem-matchers/kernel-compile-errors.json"
 
@@ -115,23 +115,23 @@ jobs:
 
           docker run -i --name kernel -d -v ${{ github.workspace }}/kernel-source-host:/container/workspace/kernel-source-container \
           -w /container/workspace/kernel-source-container kernel-linux-ps4:latest tail -f /dev/null
-          
+
           docker exec -i kernel bash <<EOF 
           set -e
-          
+
           GH_INPUT_PROFILE="${{ inputs.profile }}"
           export TARGET_PROFILE="\${GH_INPUT_PROFILE:-Server}"
-          
+
           echo "Executing build.sh with profile: \$TARGET_PROFILE"
           chmod +x build.sh
-          
+
           ./build.sh --option 3 use=\$TARGET_PROFILE
 
           echo "Packaging build artifacts..."
-          
+
           tar -cvzf /container/workspace/kernel-source-container/kernel.tar.gz -C out bzImage .config --owner=0 --group=0
           EOF
-          
+
           cd ${{ github.workspace }}/kernel-source-host 
           echo "compile-kernel-complete=true" >> $GITHUB_OUTPUT
           set -e
