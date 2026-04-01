@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 
 # PS4-Linux Strawberry Builder
-# Supports two build profiles:
-#   server  — max throughput, HZ=250, PREEMPT_VOLUNTARY, performance governor
-#   general — gaming/desktop, HZ=1000, PREEMPT=y, BORE, schedutil/reflex
+# Supports two PS4-focused ThinLTO build profiles:
+#   server  — headless/services, HZ=250, PREEMPT_VOLUNTARY, performance governor
+#   general — desktop/gaming, HZ=1000, PREEMPT=y, BORE, schedutil/reflex
 #
 # Usage:
 #   ./build.sh                        Interactive menu
@@ -205,6 +205,8 @@ if [[ "$DO_BUILD" == "1" ]]; then
     echo -e "\e[1;34m[*]\e[0m Applying invariant config (both profiles)..."
 
     # ── Build system ─────────────────────────────────────────────────────
+    # ThinLTO only: on PS4, FullLTO's extra link time does not buy enough
+    # runtime speed to justify the heavier build cost.
     scripts/config --enable  CONFIG_LTO_CLANG_THIN
     scripts/config --disable CONFIG_LTO_CLANG_FULL
     scripts/config --disable CONFIG_LOCALVERSION_AUTO
@@ -225,6 +227,15 @@ if [[ "$DO_BUILD" == "1" ]]; then
     scripts/config --disable CONFIG_NUMA_MEMBLKS
     scripts/config --disable CONFIG_NUMA_BALANCING
 
+    # ── Bare-metal PS4 target ────────────────────────────────────────────
+    # Both profiles target a native PS4, so trim guest/hypervisor overhead.
+    scripts/config --disable CONFIG_HYPERVISOR_GUEST
+    scripts/config --disable CONFIG_PARAVIRT
+    scripts/config --disable CONFIG_PARAVIRT_XXL
+    scripts/config --disable CONFIG_KVM
+    scripts/config --disable CONFIG_KVM_AMD
+    scripts/config --disable CONFIG_KVM_INTEL
+
     # ── Memory management ────────────────────────────────────────────────
     # MGLRU: better page reclaim under memory pressure. Mixed anon+file
     # workloads (games loading assets while running) benefit most.
@@ -232,10 +243,8 @@ if [[ "$DO_BUILD" == "1" ]]; then
     scripts/config --enable  CONFIG_LRU_GEN_ENABLED
     scripts/config --enable  CONFIG_LRU_GEN_STATS
 
-    # THP always: reduces TLB pressure for large allocations.
-    # Game engines and Vulkan drivers allocate large contiguous regions.
+    # Enable THP support globally; each profile chooses its default mode.
     scripts/config --enable  CONFIG_TRANSPARENT_HUGEPAGE
-    scripts/config --enable  CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS
 
     # SLUB per-cpu partial lists: reduces slab lock contention under
     # concurrent allocation workloads (games, servers, containers).
@@ -265,6 +274,7 @@ if [[ "$DO_BUILD" == "1" ]]; then
     # calculated but never applied. Required pairing.
     scripts/config --enable  CONFIG_TCP_CONG_BBR
     scripts/config --set-str CONFIG_DEFAULT_TCP_CONG "bbr"
+    scripts/config --enable  CONFIG_NET_SCH_DEFAULT
     scripts/config --enable  CONFIG_NET_SCH_FQ
     scripts/config --enable  CONFIG_NET_SCH_FQ_CODEL
     scripts/config --enable  CONFIG_NET_SCH_CAKE
@@ -334,7 +344,11 @@ if [[ "$DO_BUILD" == "1" ]]; then
         # BORE off: burst-aware interactive bias is irrelevant for
         # server batch/throughput workloads.
         scripts/config --disable CONFIG_SCHED_BORE
+        scripts/config --disable CONFIG_SCHED_AUTOGROUP
         scripts/config --disable CONFIG_CPU_FREQ_GOV_REFLEX
+
+        # Keep the server profile on the safer side for exposed services.
+        scripts/config --enable  CONFIG_CPU_MITIGATIONS
 
         # Performance governor: clocks at max, zero scaling latency.
         scripts/config --disable CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL
@@ -350,11 +364,22 @@ if [[ "$DO_BUILD" == "1" ]]; then
         scripts/config --enable  CONFIG_HZ_250
         scripts/config --set-val CONFIG_HZ 250
 
+        # Tickless idle avoids wasted timer interrupts on parked CPUs
+        # without the syscall/interrupt tradeoffs of full dynticks.
+        scripts/config --enable  CONFIG_NO_HZ_IDLE
+        scripts/config --disable CONFIG_NO_HZ_FULL
+
         # PREEMPT_VOLUNTARY: better throughput than full preemption.
         # Yields only at explicit schedule points.
         scripts/config --disable CONFIG_PREEMPT
         scripts/config --disable CONFIG_PREEMPT_NONE
         scripts/config --enable  CONFIG_PREEMPT_VOLUNTARY
+
+        # Keep memory/cpu controllers for services and light containers.
+        scripts/config --enable  CONFIG_MEMCG
+        scripts/config --enable  CONFIG_CGROUP_SCHED
+        scripts/config --enable  CONFIG_FAIR_GROUP_SCHED
+        scripts/config --disable CONFIG_RT_GROUP_SCHED
 
         # CFS bandwidth: CPU quota enforcement for containers/cgroups.
         scripts/config --enable  CONFIG_CFS_BANDWIDTH
@@ -364,56 +389,82 @@ if [[ "$DO_BUILD" == "1" ]]; then
         scripts/config --enable  CONFIG_PSI
         scripts/config --enable  CONFIG_PSI_DEFAULT_DISABLED
 
+        # THP madvise: keeps the TLB win for opted-in workloads without
+        # the memory bloat and compaction spikes of always-on THP.
+        scripts/config --enable  CONFIG_TRANSPARENT_HUGEPAGE
+        scripts/config --disable CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS
+        scripts/config --enable  CONFIG_TRANSPARENT_HUGEPAGE_MADVISE
+
         # mq-deadline: predictable latency under queue depth, better for
         # server HDD/SSD throughput than BFQ.
         scripts/config --set-str CONFIG_DEFAULT_IOSCHED "mq-deadline"
 
+        # FQ is the cleanest default partner for BBR pacing on servers.
+        scripts/config --enable  CONFIG_DEFAULT_FQ
+        scripts/config --disable CONFIG_DEFAULT_FQ_CODEL
+        scripts/config --disable CONFIG_DEFAULT_FQ_PIE
+        scripts/config --disable CONFIG_DEFAULT_SFQ
+        scripts/config --disable CONFIG_DEFAULT_PFIFO_FAST
+        scripts/config --set-str CONFIG_DEFAULT_NET_SCH "fq"
+
     else
         echo -e "\e[1;34m[*]\e[0m Applying general/gaming profile..."
 
-        # BORE: burst-aware scheduler. Tracks CPU burst history per task.
-        # Keeps game/foreground threads responsive by preventing background
-        # tasks from stealing time slices unexpectedly.
+        # ── Mitigations ──────────────────────────────────────────────────
+        # Dedicated desktop/gaming box: strip x86 mitigation overhead for
+        # the lowest syscall and context-switch latency on 6.18 LTS.
+        scripts/config --disable CONFIG_CPU_MITIGATIONS
+
+        # ── Cgroup / memcg ───────────────────────────────────────────────
+        # MEMCG hooks into every alloc_pages. No containers on this box.
+        scripts/config --disable CONFIG_MEMCG
+        scripts/config --disable CONFIG_CGROUP_SCHED
+        scripts/config --disable CONFIG_FAIR_GROUP_SCHED
+        scripts/config --disable CONFIG_RT_GROUP_SCHED
+        scripts/config --disable CONFIG_CFS_BANDWIDTH
+
+        # ── BORE ─────────────────────────────────────────────────────────
         scripts/config --enable  CONFIG_SCHED_BORE
 
-        # Reflex governor: PS4-specific cpufreq governor.
-        # Schedutil as fallback for standard frequency scaling.
+        # ── CPU frequency ─────────────────────────────────────────────────
         scripts/config --enable  CONFIG_CPU_FREQ_GOV_REFLEX
         scripts/config --enable  CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL
         scripts/config --enable  CONFIG_CPU_FREQ_GOV_SCHEDUTIL
         scripts/config --disable CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE
 
-        # HZ=1000: 1ms timer resolution. Required for smooth frame pacing.
-        # At 60fps the frame budget is 16.6ms -- coarse timers cause
-        # visible stutter.
+        # ── Timer / preemption ────────────────────────────────────────────
+        # HZ=1000 + NO_HZ_FULL: 1ms resolution + tickless on game cores.
         scripts/config --disable CONFIG_HZ_250
         scripts/config --disable CONFIG_HZ_300
         scripts/config --disable CONFIG_HZ_100
         scripts/config --enable  CONFIG_HZ_1000
         scripts/config --set-val CONFIG_HZ 1000
+        scripts/config --disable CONFIG_NO_HZ_IDLE
+        scripts/config --enable  CONFIG_NO_HZ_FULL
 
         # Full preemption: kernel preemptible anywhere safe.
-        # Reduces worst-case latency for audio and input threads.
         scripts/config --enable  CONFIG_PREEMPT
         scripts/config --disable CONFIG_PREEMPT_VOLUNTARY
         scripts/config --disable CONFIG_PREEMPT_NONE
 
-        # CFS bandwidth off: unnecessary overhead for desktop.
-        scripts/config --disable CONFIG_CFS_BANDWIDTH
+        # Always-on THP fits desktop/gaming better than server duty:
+        # shader caches, Wine/Proton, and larger userspace heaps benefit.
+        scripts/config --enable  CONFIG_TRANSPARENT_HUGEPAGE
+        scripts/config --enable  CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS
+        scripts/config --disable CONFIG_TRANSPARENT_HUGEPAGE_MADVISE
 
-        # PSI off: not needed for gaming.
+        # ── I/O ───────────────────────────────────────────────────────────
+        # BFQ: isolates game I/O from background noise.
         scripts/config --disable CONFIG_PSI
-
-        # BFQ: separates interactive I/O (game asset loads, shader cache)
-        # from background I/O (downloads, logs). Better frame pacing
-        # during I/O-heavy scene transitions.
         scripts/config --set-str CONFIG_DEFAULT_IOSCHED "bfq"
 
-        # NO_HZ_FULL: CPUs running a single task stop the periodic tick
-        # entirely -- eliminates ~1000 timer interrupts/sec of jitter on
-        # game threads. Reduces frame time variance on CPU-bound scenes.
-        scripts/config --disable CONFIG_NO_HZ_IDLE
-        scripts/config --enable  CONFIG_NO_HZ_FULL
+        # fq_codel is the better desktop default for mixed latency traffic.
+        scripts/config --enable  CONFIG_DEFAULT_FQ_CODEL
+        scripts/config --disable CONFIG_DEFAULT_FQ
+        scripts/config --disable CONFIG_DEFAULT_FQ_PIE
+        scripts/config --disable CONFIG_DEFAULT_SFQ
+        scripts/config --disable CONFIG_DEFAULT_PFIFO_FAST
+        scripts/config --set-str CONFIG_DEFAULT_NET_SCH "fq_codel"
 
     fi
 
@@ -444,6 +495,21 @@ if [[ "$DO_BUILD" == "1" ]]; then
     cp .config "${OUTPUT_DIR}/.config"
 
     KVER=$(cat include/config/kernel.release 2>/dev/null || echo "unknown")
+    LTO_FLAVOR="ThinLTO"
+
+    PROFILE_LABEL="Server"
+    if [[ "$PROFILE" == "general" ]]; then
+        PROFILE_LABEL="Desktop"
+    fi
+
+    KVER_BASE="${KVER%%-*}"
+    RELEASE_TRACK="Mainline"
+    if [[ "$KVER_BASE" == 6.18.* ]]; then
+        RELEASE_TRACK="LTS"
+    fi
+
+    ARTIFACT_BASENAME="Strawberry-${LTO_FLAVOR}-${PROFILE_LABEL}-${RELEASE_TRACK}-${KVER}"
+    printf '%s\n' "${ARTIFACT_BASENAME}" > "${OUTPUT_DIR}/artifact_name.txt"
     echo ""
     echo -e "\e[1;32m╔══════════════════════════════════════════════════╗\e[0m"
     echo -e "\e[1;32m║\e[0m  Build complete! [${PROFILE}]$(printf "%-26s" "")\e[1;32m║\e[0m"
@@ -452,13 +518,17 @@ if [[ "$DO_BUILD" == "1" ]]; then
     echo -e "\e[1;32m╚══════════════════════════════════════════════════╝\e[0m"
     echo ""
     if [[ "$PROFILE" == "general" ]]; then
-        echo "Post-boot sysctl for gaming (add to /etc/sysctl.d/99-ps4-gaming.conf):"
+        echo "Kernel cmdline (add to your kexec invocation):"
+        echo "  mitigations=off pti=off spectre_v2=off"
+        echo "  isolcpus=2-7 nohz_full=2-7 rcu_nocbs=2-7 irqaffinity=0-1 threadirqs"
+        echo ""
+        echo "Post-boot sysctl (add to /etc/sysctl.d/99-ps4-gaming.conf):"
         echo "  vm.swappiness = 10"
         echo "  vm.dirty_ratio = 15"
         echo "  vm.dirty_background_ratio = 5"
         echo "  vm.compaction_proactiveness = 1"
         echo ""
-        echo "Force GPU to max SCLK (add to /etc/rc.local or a systemd unit):"
+        echo "Force GPU to max SCLK:"
         echo "  echo manual > /sys/class/drm/card0/device/power_dpm_force_performance_level"
         echo "  echo 2      > /sys/class/drm/card0/device/pp_dpm_sclk"
         echo ""

@@ -1,4 +1,5 @@
 name: "Strawberry-ThinLTO-LTS"
+run-name: "${{ github.event_name == 'workflow_dispatch' && format('Strawberry-{0}', inputs.profile) || format('Strawberry-tag-{0}', github.ref_name) }}"
 
 on:
   workflow_dispatch:
@@ -27,6 +28,22 @@ jobs:
           echo "CACHE_WORKSPACE_KEY=${{ runner.os }}-workspace-${{ github.run_id }}" >> $GITHUB_ENV
           echo "CACHE_WORKSPACE_RESTORE_KEY=${{ runner.os }}-workspace-${{ github.ref_name }}" >> $GITHUB_ENV
 
+      - name: Resolve build variables
+        id: build-vars
+        run: |
+          PROFILE_INPUT="${{ inputs.profile || 'Server' }}"
+          if [[ "${PROFILE_INPUT,,}" == "general" ]]; then
+            echo "target_profile=General" >> $GITHUB_OUTPUT
+            echo "target_lto=ThinLTO" >> $GITHUB_OUTPUT
+            echo "cache_suffix=General-ThinLTO" >> $GITHUB_OUTPUT
+            echo "swap_gb=20" >> $GITHUB_OUTPUT
+          else
+            echo "target_profile=Server" >> $GITHUB_OUTPUT
+            echo "target_lto=ThinLTO" >> $GITHUB_OUTPUT
+            echo "cache_suffix=Server-ThinLTO" >> $GITHUB_OUTPUT
+            echo "swap_gb=12" >> $GITHUB_OUTPUT
+          fi
+
       - name: Set SUID to tar binary
         run: sudo chown root /bin/tar && sudo chmod u+s /bin/tar
 
@@ -51,7 +68,7 @@ jobs:
         id: cache-restore-workspace
         with:
           path: kernel-source-host
-          key: ${{ env.CACHE_WORKSPACE_RESTORE_KEY }}-ThinLTO
+          key: ${{ env.CACHE_WORKSPACE_RESTORE_KEY }}-${{ steps.build-vars.outputs.cache_suffix }}
 
       - name: Check and make kernel-source-host directory
         run: | 
@@ -106,7 +123,7 @@ jobs:
       - name: Set up Swapfile with Marketplace Actions
         uses: pierotofy/set-swap-space@fc79b3f67fa8a838184ce84a674ca12238d2c761
         with:
-          swap-size-gb: 12
+          swap-size-gb: ${{ steps.build-vars.outputs.swap_gb }}
 
       - name: Compile the linux kernel with docker run
         id: compile-kernel-step
@@ -119,7 +136,7 @@ jobs:
           docker exec -i kernel bash <<EOF 
           set -e
 
-          GH_INPUT_PROFILE="${{ inputs.profile }}"
+          GH_INPUT_PROFILE="${{ steps.build-vars.outputs.target_profile }}"
           export TARGET_PROFILE="\${GH_INPUT_PROFILE:-Server}"
 
           echo "Executing build.sh with profile: \$TARGET_PROFILE"
@@ -129,7 +146,14 @@ jobs:
 
           echo "Packaging build artifacts..."
 
-          tar -cvzf /container/workspace/kernel-source-container/kernel.tar.gz -C out bzImage .config --owner=0 --group=0
+          ARTIFACT_BASENAME="\$(cat out/artifact_name.txt 2>/dev/null || true)"
+          if [[ -z "\$ARTIFACT_BASENAME" ]]; then
+            ARTIFACT_BASENAME="Strawberry-${{ steps.build-vars.outputs.target_lto }}-\${TARGET_PROFILE}-LTS"
+          fi
+          ARTIFACT_FILE="\${ARTIFACT_BASENAME}.tar.gz"
+          
+          tar -cvzf "/container/workspace/kernel-source-container/\${ARTIFACT_FILE}" -C out bzImage .config --owner=0 --group=0
+          printf "%s\n" "\${ARTIFACT_FILE}" > /container/workspace/kernel-source-container/artifact_name.txt
           EOF
 
           cd ${{ github.workspace }}/kernel-source-host 
@@ -143,14 +167,14 @@ jobs:
         id: read-artifact
         working-directory: kernel-source-host
         run: |
-          echo "pkg_name=kernel.tar.gz" >> $GITHUB_OUTPUT
+          ARTIFACT_NAME="$(cat artifact_name.txt 2>/dev/null || echo kernel.tar.gz)"
+          echo "pkg_name=${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
 
       - name: Upload kernel image to github actions artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.read-artifact.outputs.pkg_name }}
           path: kernel-source-host/${{ steps.read-artifact.outputs.pkg_name }}
-          archive: false
 
       - name: Delete Cache of Github Workspace
         env:
