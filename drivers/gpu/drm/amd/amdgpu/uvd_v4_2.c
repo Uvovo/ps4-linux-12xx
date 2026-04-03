@@ -71,6 +71,10 @@
 #define mmUVD_LMI_RBC_RB_64BIT_BAR_LOW 0x3C69
 #endif
 
+#ifndef mmUVD_SUVD_CGC_GATE
+#define mmUVD_SUVD_CGC_GATE 0x3BE4
+#endif
+
 #ifndef mmUVD_LMI_VCPU_CACHE1_64BIT_BAR_LOW
 #define mmUVD_LMI_VCPU_CACHE1_64BIT_BAR_LOW 0x3BEC
 #endif
@@ -98,6 +102,7 @@
 #define mmUVD_GP_SCRATCH0_LIVERPOOL 0x3DAC
 #define mmUVD_GP_SCRATCH4_LIVERPOOL 0x3DC0
 #define mmUVD_RBC_RB_RPTR_ADDR_ALT 0x3DAB
+#define mmUVD_LMI_MISC_LIVERPOOL 0x3D68
 
 #ifndef ixUVD_LMI_VMID_INTERNAL
 #define ixUVD_LMI_VMID_INTERNAL 0x99
@@ -201,6 +206,16 @@ static u32 uvd_v4_2_legacy_ext40_addr(u64 addr)
 	return (u32)((addr >> 34) & 0xff);
 }
 
+static u32 uvd_v4_2_legacy_boot_rb_base(void)
+{
+	return AMDGPU_UVD_LEGACY_RBC_RB_OFFSET;
+}
+
+static u64 uvd_v4_2_legacy_boot_rb_gpu_addr(struct amdgpu_device *adev)
+{
+	return adev->uvd.inst->gpu_addr + uvd_v4_2_legacy_boot_rb_base();
+}
+
 static void uvd_v4_2_program_legacy_cache_bars(struct amdgpu_device *adev)
 {
 	u32 bar_low = uvd_v4_2_legacy_bar_low(adev->uvd.inst->gpu_addr);
@@ -219,15 +234,13 @@ static void uvd_v4_2_program_legacy_cache_bars(struct amdgpu_device *adev)
 
 static void uvd_v4_2_program_legacy_rbc_bar(struct amdgpu_device *adev)
 {
-	struct amdgpu_ring *ring = &adev->uvd.inst->ring;
-
 	if (!uvd_v4_2_use_legacy_bar_layout(adev))
 		return;
 
 	WREG32(mmUVD_LMI_RBC_RB_64BIT_BAR_LOW,
-	       uvd_v4_2_legacy_bar_low(ring->gpu_addr));
+	       uvd_v4_2_legacy_bar_low(adev->uvd.inst->gpu_addr));
 	WREG32(mmUVD_LMI_RBC_RB_64BIT_BAR_HIGH,
-	       uvd_v4_2_legacy_bar_high(ring->gpu_addr));
+	       uvd_v4_2_legacy_bar_high(adev->uvd.inst->gpu_addr));
 }
 
 static void uvd_v4_2_program_internal_vmids(struct amdgpu_device *adev)
@@ -282,6 +295,7 @@ static void uvd_v4_2_flush_legacy_rbc_garlic(struct amdgpu_device *adev)
 static void uvd_v4_2_program_legacy_rbc_boot(struct amdgpu_device *adev)
 {
 	struct amdgpu_ring *ring = &adev->uvd.inst->ring;
+	u8 *cpu_addr = adev->uvd.inst->cpu_addr;
 	u32 rb_bufsz, tmp;
 
 	if (!uvd_v4_2_use_legacy_boot(adev))
@@ -296,13 +310,18 @@ static void uvd_v4_2_program_legacy_rbc_boot(struct amdgpu_device *adev)
 	tmp = REG_SET_FIELD(tmp, UVD_RBC_RB_CNTL, RB_RPTR_WR_EN, 1);
 	WREG32(mmUVD_RBC_RB_CNTL, tmp);
 	WREG32(mmUVD_RBC_RB_WPTR_CNTL, 0);
-	WREG32(mmUVD_RBC_RB_BASE, ring->gpu_addr);
-	WREG32(mmUVD_RBC_IB_BASE, 0);
+
+	if (cpu_addr)
+		memset(cpu_addr + AMDGPU_UVD_LEGACY_RBC_RB_OFFSET, 0,
+		       min_t(u32, ring->ring_size, AMDGPU_UVD_LEGACY_RBC_RB_SIZE));
+
+	WREG32(mmUVD_RBC_RB_BASE, uvd_v4_2_legacy_boot_rb_base());
+	WREG32(mmUVD_RBC_IB_BASE, uvd_v4_2_legacy_boot_rb_base());
 	WREG32(mmUVD_GP_SCRATCH4_LIVERPOOL, 0);
 	WREG32(mmUVD_RBC_RB_RPTR_ADDR_ALT, 0x1);
 	uvd_v4_2_flush_legacy_rbc_garlic(adev);
 	uvd_v4_2_program_legacy_rbc_bar(adev);
-	WREG32(mmUVD_RBC_RB_BASE, ring->gpu_addr);
+	WREG32(mmUVD_RBC_RB_BASE, uvd_v4_2_legacy_boot_rb_base());
 	ring->wptr = 0;
 	WREG32(mmUVD_RBC_RB_WPTR, 0);
 	WREG32(mmUVD_RBC_RB_RPTR, 0);
@@ -314,6 +333,28 @@ static void uvd_v4_2_program_legacy_rbc_boot(struct amdgpu_device *adev)
 	 */
 	WREG32(mmUVD_RBC_RB_RPTR_ADDR_ALT, 0x1);
 	WREG32(mmUVD_GP_SCRATCH0_LIVERPOOL, 0x10);
+}
+
+static void uvd_v4_2_program_legacy_misc_init(struct amdgpu_device *adev)
+{
+	if (!uvd_v4_2_use_legacy_boot(adev))
+		return;
+
+	/*
+	 * The Liverpool/Gladius boot trace toggles an undocumented UVD-side
+	 * LMI helper register around memory-controller init. The values are
+	 * stable across the recovered boots: 0 before LMI programming, then
+	 * 0x3dff after the MPC mux setup.
+	 */
+	WREG32(mmUVD_LMI_MISC_LIVERPOOL, 0);
+}
+
+static void uvd_v4_2_program_legacy_misc_enable(struct amdgpu_device *adev)
+{
+	if (!uvd_v4_2_use_legacy_boot(adev))
+		return;
+
+	WREG32(mmUVD_LMI_MISC_LIVERPOOL, 0x3dff);
 }
 /**
  * uvd_v4_2_ring_get_rptr - get read pointer
@@ -562,6 +603,8 @@ static int uvd_v4_2_start(struct amdgpu_device *adev)
 
 	uvd_v4_2_set_dcm(adev, true);
 	WREG32(mmUVD_CGC_GATE, 0);
+	if (legacy_boot)
+		WREG32(mmUVD_SUVD_CGC_GATE, 0);
 
 #ifdef __BIG_ENDIAN
 	/* swap (8 in 32) RB and IB */
@@ -595,9 +638,10 @@ static int uvd_v4_2_start(struct amdgpu_device *adev)
 		mdelay(5);
 
 		/* initialize UVD memory controller */
-		WREG32(mmUVD_LMI_CTRL, 0x203108);
 		WREG32(mmUVD_LMI_SWAP_CNTL, lmi_swap_cntl);
 		WREG32(mmUVD_MP_SWAP_CNTL, mp_swap_cntl);
+		uvd_v4_2_program_legacy_misc_init(adev);
+		WREG32(mmUVD_LMI_CTRL, 0x203108);
 
 		tmp = RREG32(mmUVD_MPC_CNTL);
 		WREG32(mmUVD_MPC_CNTL, tmp | 0x10);
@@ -608,6 +652,7 @@ static int uvd_v4_2_start(struct amdgpu_device *adev)
 		WREG32(mmUVD_MPC_SET_MUXB1, 0x0);
 		WREG32(mmUVD_MPC_SET_ALU, 0);
 		WREG32(mmUVD_MPC_SET_MUX, 0x88);
+		uvd_v4_2_program_legacy_misc_enable(adev);
 
 		uvd_v4_2_program_internal_vmids(adev);
 
@@ -626,13 +671,25 @@ static int uvd_v4_2_start(struct amdgpu_device *adev)
 		uvd_v4_2_program_legacy_cache_bars(adev);
 		uvd_v4_2_program_mif_addr_config(adev);
 		uvd_v4_2_program_legacy_rbc_boot(adev);
+
+		/*
+		 * Orbis touches the cache control register again in the final
+		 * pre-boot window, right after the RBC state is primed.
+		 */
+		tmp = RREG32_UVD_CTX(ixUVD_LMI_CACHE_CTRL);
+		WREG32_UVD_CTX(ixUVD_LMI_CACHE_CTRL, tmp & (~0x10));
 		WREG32(mmUVD_VCPU_CNTL, 1 << 9);
 
 		/* enable UMC */
 		WREG32_P(mmUVD_LMI_CTRL2, 0, ~(1 << 8));
 
-		/* boot up the VCPU */
-		WREG32(mmUVD_SOFT_RESET, 0);
+		/*
+		 * Drop reset in the same staged read-modify-write style as the
+		 * legacy trace instead of blasting SOFT_RESET straight to zero.
+		 */
+		WREG32_P(mmUVD_SOFT_RESET, 0, ~UVD_SOFT_RESET__LMI_SOFT_RESET_MASK);
+		WREG32_P(mmUVD_SOFT_RESET, 0, ~UVD_SOFT_RESET__LMI_UMC_SOFT_RESET_MASK);
+		WREG32_P(mmUVD_SOFT_RESET, 0, ~UVD_SOFT_RESET__VCPU_SOFT_RESET_MASK);
 		mdelay(10);
 
 		/*
@@ -1000,19 +1057,20 @@ static void uvd_v4_2_log_boot_state(struct amdgpu_device *adev, const char *tag)
 		 RREG32(mmUVD_VCPU_CNTL), RREG32(mmUVD_SOFT_RESET),
 		 RREG32(mmSRBM_SOFT_RESET), RREG32(mmUVD_LMI_CTRL),
 		 RREG32(mmUVD_LMI_CTRL2));
-	DRM_INFO("UVD %s: CACHE0=0x%08x/%x CACHE1=0x%08x/%x CACHE2=0x%08x/%x ADDR_EXT=0x%08x EXT40=0x%08x MPC_CNTL=0x%08x\n",
+	DRM_INFO("UVD %s: CACHE0=0x%08x/%x CACHE1=0x%08x/%x CACHE2=0x%08x/%x ADDR_EXT=0x%08x EXT40=0x%08x MPC_CNTL=0x%08x SUVD_CGC=0x%08x LMI_MISC=0x%08x\n",
 		 tag, RREG32(mmUVD_VCPU_CACHE_OFFSET0),
 		 RREG32(mmUVD_VCPU_CACHE_SIZE0), RREG32(mmUVD_VCPU_CACHE_OFFSET1),
 		 RREG32(mmUVD_VCPU_CACHE_SIZE1), RREG32(mmUVD_VCPU_CACHE_OFFSET2),
 		 RREG32(mmUVD_VCPU_CACHE_SIZE2), RREG32(mmUVD_LMI_ADDR_EXT),
-		 RREG32(mmUVD_LMI_EXT40_ADDR), RREG32(mmUVD_MPC_CNTL));
+		 RREG32(mmUVD_LMI_EXT40_ADDR), RREG32(mmUVD_MPC_CNTL),
+		 RREG32(mmUVD_SUVD_CGC_GATE), RREG32(mmUVD_LMI_MISC_LIVERPOOL));
 	DRM_INFO("UVD %s: VMID_INT=0x%08x VMID_INT2=0x%08x VMID_INT3=0x%08x LMI_CACHE_CTRL=0x%08x\n",
 		 tag, RREG32_UVD_CTX(ixUVD_LMI_VMID_INTERNAL),
 		 RREG32_UVD_CTX(ixUVD_LMI_VMID_INTERNAL2),
 		 RREG32_UVD_CTX(ixUVD_LMI_VMID_INTERNAL3),
 		 RREG32_UVD_CTX(ixUVD_LMI_CACHE_CTRL));
 	if (uvd_v4_2_use_legacy_bar_layout(adev))
-		DRM_INFO("UVD %s: BAR0=%08x/%08x BAR1=%08x/%08x BAR2=%08x/%08x RBC_BAR=%08x/%08x RB_BASE=%08x IB_BASE=%08x RB_CNTL=%08x GARLIC=%08x RPTR_ADDR=%08x MIF_CTX=%08x/%08x/%08x\n",
+		DRM_INFO("UVD %s: BAR0=%08x/%08x BAR1=%08x/%08x BAR2=%08x/%08x RBC_BAR=%08x/%08x RB_BASE=%08x IB_BASE=%08x BOOT_RB=0x%016llx RB_CNTL=%08x GARLIC=%08x RPTR_ADDR=%08x MIF_CTX=%08x/%08x/%08x\n",
 			 tag,
 			 RREG32(mmUVD_LMI_VCPU_CACHE_64BIT_BAR_LOW),
 			 RREG32(mmUVD_LMI_VCPU_CACHE_64BIT_BAR_HIGH),
@@ -1024,6 +1082,7 @@ static void uvd_v4_2_log_boot_state(struct amdgpu_device *adev, const char *tag)
 			 RREG32(mmUVD_LMI_RBC_RB_64BIT_BAR_HIGH),
 			 RREG32(mmUVD_RBC_RB_BASE),
 			 RREG32(mmUVD_RBC_IB_BASE),
+			 uvd_v4_2_legacy_boot_rb_gpu_addr(adev),
 			 RREG32(mmUVD_RBC_RB_CNTL),
 			 RREG32(mmGARLIC_FLUSH_CNTL),
 			 RREG32(mmUVD_RBC_RB_RPTR_ADDR),

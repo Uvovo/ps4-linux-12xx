@@ -164,6 +164,10 @@ static unsigned long amdgpu_uvd_vcpu_bo_size(struct amdgpu_device *adev,
 		bo_size = amdgpu_uvd_legacy_vcpu_cache_size0(adev) +
 			  AMDGPU_UVD_LEGACY_VCPU_CACHE_SIZE1 +
 			  AMDGPU_UVD_LEGACY_VCPU_CACHE_SIZE2;
+		if (bo_size < AMDGPU_UVD_LEGACY_RBC_RB_OFFSET +
+			      AMDGPU_UVD_LEGACY_RBC_RB_SIZE)
+			bo_size = AMDGPU_UVD_LEGACY_RBC_RB_OFFSET +
+				  AMDGPU_UVD_LEGACY_RBC_RB_SIZE;
 		return AMDGPU_GPU_PAGE_ALIGN(bo_size);
 	}
 
