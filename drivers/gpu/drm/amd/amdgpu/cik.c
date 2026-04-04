@@ -2565,6 +2565,17 @@ static int cik_common_soft_reset(struct amdgpu_ip_block *ip_block)
 	return 0;
 }
 
+static int cik_common_post_soft_reset(struct amdgpu_ip_block *ip_block)
+{
+	struct amdgpu_device *adev = ip_block->adev;
+
+	if (adev->asic_type == CHIP_LIVERPOOL ||
+	    adev->asic_type == CHIP_GLADIUS)
+		return liverpool_clk_force_max(adev);
+
+	return 0;
+}
+
 static int cik_common_set_clockgating_state(struct amdgpu_ip_block *ip_block,
 					    enum amd_clockgating_state state)
 {
@@ -2585,6 +2596,7 @@ static const struct amd_ip_funcs cik_common_ip_funcs = {
 	.resume = cik_common_resume,
 	.is_idle = cik_common_is_idle,
 	.soft_reset = cik_common_soft_reset,
+	.post_soft_reset = cik_common_post_soft_reset,
 	.set_clockgating_state = cik_common_set_clockgating_state,
 	.set_powergating_state = cik_common_set_powergating_state,
 };

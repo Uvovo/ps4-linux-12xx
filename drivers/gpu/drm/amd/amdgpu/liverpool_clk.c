@@ -68,6 +68,7 @@
  */
 
 #include <linux/delay.h>
+#include <linux/seq_file.h>
 #include "amdgpu.h"
 #include "liverpool_clk.h"
 
@@ -112,6 +113,62 @@
 #define LIVERPOOL_CLK_TIMEOUT_US        10
 #define LIVERPOOL_CLK_TIMEOUT_ITER      1000
 
+int liverpool_clk_debugfs_print(struct amdgpu_device *adev, struct seq_file *m)
+{
+	u32 spll_fuses, sclk_fuses, spll_cntl, spll_fb;
+	u32 cntl, status, startup_did, current_did;
+	u32 spll_freq_id_startup, spll_freq_id_max;
+	u32 spll_pdiva, spll_fbdiv;
+
+	if (adev->asic_type != CHIP_LIVERPOOL &&
+	    adev->asic_type != CHIP_GLADIUS)
+		return -EINVAL;
+
+	spll_fuses = RREG32_SMC(GCK_SPLL_FUSES);
+	sclk_fuses = RREG32_SMC(GCK_SCLK_FUSES);
+	spll_cntl = RREG32_SMC(CG_SPLL_FUNC_CNTL);
+	spll_fb = RREG32_SMC(CG_SPLL_FUNC_CNTL_3);
+	cntl = RREG32_SMC(CG_SCLK_CNTL);
+	status = RREG32_SMC(CG_SCLK_STATUS);
+
+	spll_freq_id_startup = (spll_fuses & SPLL_FREQ_ID_STARTUP_MASK) >>
+		SPLL_FREQ_ID_STARTUP_SHIFT;
+	spll_freq_id_max = (spll_fuses & SPLL_FREQ_ID_MAX_MASK) >>
+		SPLL_FREQ_ID_MAX_SHIFT;
+	startup_did = (sclk_fuses & STARTUP_SCLK_DID_MASK) >>
+		STARTUP_SCLK_DID_SHIFT;
+	current_did = RREG32_SMC(SCLK_STARTUP_DID) & SCLKSTARTUPDID_MASK;
+	spll_pdiva = (spll_cntl & SPLL_PDIVA_MASK) >> SPLL_PDIVA_SHIFT;
+	spll_fbdiv = (spll_fb & SPLL_FB_DIV_MASK) >> SPLL_FB_DIV_SHIFT;
+
+	seq_printf(m, "asic: %s\n", adev->asic_type == CHIP_LIVERPOOL ?
+		   "liverpool" : "gladius");
+	seq_printf(m, "target_did: %u\n", LIVERPOOL_TARGET_SCLK_DID);
+	seq_printf(m, "startup_sclk_did_fuse: %u\n", startup_did);
+	seq_printf(m, "smc_startup_did: %u\n", current_did);
+	seq_printf(m, "cg_sclk_cntl: 0x%08x\n", cntl);
+	seq_printf(m, "cg_sclk_status: 0x%08x\n", status);
+	seq_printf(m, "sclk_divider: %u\n",
+		   (cntl & SCLK_DIVIDER_MASK) >> SCLK_DIVIDER_SHIFT);
+	seq_printf(m, "sclk_dircntl_en: %u\n", !!(cntl & SCLK_DIRCNTL_EN));
+	seq_printf(m, "sclk_dircntl_tog: %u\n", !!(cntl & SCLK_DIRCNTL_TOG));
+	seq_printf(m, "sclk_dircntl_divider: %u\n",
+		   (cntl & SCLK_DIRCNTL_DIV_MASK) >> SCLK_DIRCNTL_DIV_SHIFT);
+	seq_printf(m, "sclk_status_done: %u\n", !!(status & SCLK_STATUS_DONE));
+	seq_printf(m, "sclk_force_status_done: %u\n",
+		   !!(status & SCLK_FORCE_STATUS_DONE));
+	seq_printf(m, "sclk_dircntl_done_tog: %u\n",
+		   !!(status & SCLK_DIRCNTL_DONE_TOG));
+	seq_printf(m, "spll_freq_id_startup: %u\n", spll_freq_id_startup);
+	seq_printf(m, "spll_freq_id_max: %u\n", spll_freq_id_max);
+	seq_printf(m, "spll_pdiva: %u\n", spll_pdiva);
+	seq_printf(m, "spll_fbdiv: 0x%x\n", spll_fbdiv);
+	seq_printf(m, "spll_unlock_sticky: %u\n",
+		   !!(RREG32_SMC(CG_SPLL_STATUS) & SPLL_UNLOCK_STICKY));
+
+	return 0;
+}
+
 /* ============================================================
  * liverpool_clk_force_max - Force GPU SCLK to maximum
  * ============================================================
@@ -132,7 +189,7 @@ int liverpool_clk_force_max(struct amdgpu_device *adev)
 	u32 spll_freq_id_startup, spll_freq_id_max;
 	u32 startup_did, current_did;
 	u32 spll_pdiva, spll_fbdiv;
-	u32 cntl, status;
+	u32 cntl, status, target_tog;
 	int i;
 
 	spll_fuses = RREG32_SMC(GCK_SPLL_FUSES);
@@ -197,11 +254,13 @@ int liverpool_clk_force_max(struct amdgpu_device *adev)
 	cntl |= (LIVERPOOL_TARGET_SCLK_DID << SCLK_DIRCNTL_DIV_SHIFT) & SCLK_DIRCNTL_DIV_MASK;
 	cntl |= SCLK_DIRCNTL_EN;
 	cntl ^= SCLK_DIRCNTL_TOG;
+	target_tog = cntl & SCLK_DIRCNTL_TOG;
 	WREG32_SMC(CG_SCLK_CNTL, cntl);
 
 	for (i = 0; i < LIVERPOOL_CLK_TIMEOUT_ITER; i++) {
 		status = RREG32_SMC(CG_SCLK_STATUS);
-		if (status & (SCLK_DIRCNTL_DONE_TOG | SCLK_FORCE_STATUS_DONE))
+		if ((status & SCLK_FORCE_STATUS_DONE) &&
+		    (!!(status & SCLK_DIRCNTL_DONE_TOG) == !!target_tog))
 			break;
 		udelay(LIVERPOOL_CLK_TIMEOUT_US);
 	}
@@ -221,10 +280,13 @@ int liverpool_clk_force_max(struct amdgpu_device *adev)
 		 status);
 
 	if (((cntl & SCLK_DIRCNTL_DIV_MASK) >> SCLK_DIRCNTL_DIV_SHIFT) != LIVERPOOL_TARGET_SCLK_DID)
-		dev_warn(adev->dev,
-			 "Liverpool CLK: readback DID mismatch â€” expected %u got %u\n",
-			 LIVERPOOL_TARGET_SCLK_DID,
-			 (cntl & SCLK_DIRCNTL_DIV_MASK) >> SCLK_DIRCNTL_DIV_SHIFT);
+	{
+		dev_err(adev->dev,
+			"Liverpool CLK: readback DID mismatch, expected %u got %u\n",
+			LIVERPOOL_TARGET_SCLK_DID,
+			(cntl & SCLK_DIRCNTL_DIV_MASK) >> SCLK_DIRCNTL_DIV_SHIFT);
+		return -EIO;
+	}
 
 	return 0;
 }

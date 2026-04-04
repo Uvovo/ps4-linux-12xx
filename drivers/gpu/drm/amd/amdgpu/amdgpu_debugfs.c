@@ -36,6 +36,7 @@
 #include "amdgpu_securedisplay.h"
 #include "amdgpu_fw_attestation.h"
 #include "amdgpu_umr.h"
+#include "liverpool_clk.h"
 
 #include "amdgpu_reset.h"
 #include "amdgpu_psp_ta.h"
@@ -1811,6 +1812,28 @@ DEFINE_DEBUGFS_ATTRIBUTE(amdgpu_evict_gtt_fops, amdgpu_debugfs_evict_gtt,
 DEFINE_DEBUGFS_ATTRIBUTE(amdgpu_benchmark_fops, NULL, amdgpu_debugfs_benchmark,
 			 "%lld\n");
 
+static int amdgpu_debugfs_liverpool_clk_show(struct seq_file *m, void *unused)
+{
+	struct amdgpu_device *adev = m->private;
+	struct drm_device *dev = adev_to_drm(adev);
+	int r;
+
+	r = pm_runtime_get_sync(dev->dev);
+	if (r < 0) {
+		pm_runtime_put_autosuspend(dev->dev);
+		return r;
+	}
+
+	r = liverpool_clk_debugfs_print(adev, m);
+
+	pm_runtime_mark_last_busy(dev->dev);
+	pm_runtime_put_autosuspend(dev->dev);
+
+	return r;
+}
+
+DEFINE_SHOW_ATTRIBUTE(amdgpu_debugfs_liverpool_clk);
+
 static void amdgpu_ib_preempt_fences_swap(struct amdgpu_ring *ring,
 					  struct dma_fence **fences)
 {
@@ -2050,6 +2073,16 @@ int amdgpu_debugfs_init(struct amdgpu_device *adev)
 	if (IS_ERR(ent)) {
 		DRM_ERROR("unable to create amdgpu_set_sclk debugsfs file\n");
 		return PTR_ERR(ent);
+	}
+
+	if (adev->asic_type == CHIP_LIVERPOOL ||
+	    adev->asic_type == CHIP_GLADIUS) {
+		ent = debugfs_create_file("amdgpu_liverpool_clk", 0444, root, adev,
+					  &amdgpu_debugfs_liverpool_clk_fops);
+		if (IS_ERR(ent)) {
+			DRM_ERROR("unable to create amdgpu_liverpool_clk debugfs file\n");
+			return PTR_ERR(ent);
+		}
 	}
 
 	/* Register debugfs entries for amdgpu_ttm */

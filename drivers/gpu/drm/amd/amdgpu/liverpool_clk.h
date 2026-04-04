@@ -55,12 +55,17 @@
 #define LIVERPOOL_CLK_H
 
 struct amdgpu_device;
+struct seq_file;
 
 #ifdef CONFIG_DRM_AMDGPU_CIK
 int liverpool_clk_force_max(struct amdgpu_device *adev);
+int liverpool_clk_debugfs_print(struct amdgpu_device *adev, struct seq_file *m);
 #else
 static inline int liverpool_clk_force_max(struct amdgpu_device *adev)
 { return 0; }
+static inline int liverpool_clk_debugfs_print(struct amdgpu_device *adev,
+					      struct seq_file *m)
+{ return -EOPNOTSUPP; }
 #endif
 
 #endif /* LIVERPOOL_CLK_H */
