@@ -2420,11 +2420,12 @@ void amdgpu_vm_adjust_size(struct amdgpu_device *adev, uint32_t min_vm_size,
 	else
 		adev->vm_manager.fragment_size = amdgpu_vm_fragment_size;
 
-	dev_info(
-		adev->dev,
-		"vm size is %u GB, %u levels, block size is %u-bit, fragment size is %u-bit\n",
-		vm_size, adev->vm_manager.num_level + 1,
-		adev->vm_manager.block_size, adev->vm_manager.fragment_size);
+	if (!amdgpu_ps4_nodbg)
+		dev_info(
+			adev->dev,
+			"vm size is %u GB, %u levels, block size is %u-bit, fragment size is %u-bit\n",
+			vm_size, adev->vm_manager.num_level + 1,
+			adev->vm_manager.block_size, adev->vm_manager.fragment_size);
 }
 
 /**
@@ -2590,8 +2591,9 @@ int amdgpu_vm_init(struct amdgpu_device *adev, struct amdgpu_vm *vm,
 	vm->use_cpu_for_update = !!(adev->vm_manager.vm_update_mode &
 				    AMDGPU_VM_USE_CPU_FOR_GFX);
 
-	dev_dbg(adev->dev, "VM update mode is %s\n",
-		vm->use_cpu_for_update ? "CPU" : "SDMA");
+	if (!amdgpu_ps4_nodbg)
+		dev_dbg(adev->dev, "VM update mode is %s\n",
+			vm->use_cpu_for_update ? "CPU" : "SDMA");
 	WARN_ONCE((vm->use_cpu_for_update &&
 		   !amdgpu_gmc_vram_full_visible(&adev->gmc)),
 		  "CPU update of VM recommended only for large BAR system\n");
@@ -2633,7 +2635,8 @@ int amdgpu_vm_init(struct amdgpu_device *adev, struct amdgpu_vm *vm,
 
 	r = amdgpu_vm_create_task_info(vm);
 	if (r)
-		dev_dbg(adev->dev, "Failed to create task info for VM\n");
+		if (!amdgpu_ps4_nodbg)
+			dev_dbg(adev->dev, "Failed to create task info for VM\n");
 
 	/* Store new PASID in XArray (if non-zero) */
 	if (pasid != 0) {
@@ -2698,8 +2701,9 @@ int amdgpu_vm_make_compute(struct amdgpu_device *adev, struct amdgpu_vm *vm)
 	/* Update VM state */
 	vm->use_cpu_for_update = !!(adev->vm_manager.vm_update_mode &
 				    AMDGPU_VM_USE_CPU_FOR_COMPUTE);
-	dev_dbg(adev->dev, "VM update mode is %s\n",
-		vm->use_cpu_for_update ? "CPU" : "SDMA");
+	if (!amdgpu_ps4_nodbg)
+		dev_dbg(adev->dev, "VM update mode is %s\n",
+			vm->use_cpu_for_update ? "CPU" : "SDMA");
 	WARN_ONCE((vm->use_cpu_for_update &&
 		   !amdgpu_gmc_vram_full_visible(&adev->gmc)),
 		  "CPU update of VM recommended only for large BAR system\n");
@@ -2996,7 +3000,8 @@ bool amdgpu_vm_handle_fault(struct amdgpu_device *adev, u32 pasid,
 
 	r = dma_resv_reserve_fences(root->tbo.base.resv, 1);
 	if (r) {
-		pr_debug("failed %d to reserve fence slot\n", r);
+		if (!amdgpu_ps4_nodbg)
+			pr_debug("failed %d to reserve fence slot\n", r);
 		goto error_unlock;
 	}
 

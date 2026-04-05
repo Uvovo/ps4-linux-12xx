@@ -127,7 +127,8 @@ void amdgpu_gfx_parse_disable_cu(unsigned int *mask, unsigned int max_se, unsign
 		}
 
 		if (se < max_se && sh < max_sh && cu < 16) {
-			DRM_INFO("amdgpu: disabling CU %u.%u.%u\n", se, sh, cu);
+			if (!amdgpu_ps4_nodbg)
+				DRM_INFO("amdgpu: disabling CU %u.%u.%u\n", se, sh, cu);
 			mask[se * max_sh + sh] |= 1u << cu;
 		} else {
 			DRM_ERROR("amdgpu: disable_cu %u.%u.%u is out of range\n",
@@ -149,8 +150,9 @@ static bool amdgpu_gfx_is_graphics_multipipe_capable(struct amdgpu_device *adev)
 static bool amdgpu_gfx_is_compute_multipipe_capable(struct amdgpu_device *adev)
 {
 	if (amdgpu_compute_multipipe != -1) {
-		dev_info(adev->dev, "amdgpu: forcing compute pipe policy %d\n",
-			 amdgpu_compute_multipipe);
+		if (!amdgpu_ps4_nodbg)
+			dev_info(adev->dev, "amdgpu: forcing compute pipe policy %d\n",
+				 amdgpu_compute_multipipe);
 		return amdgpu_compute_multipipe == 1;
 	}
 
@@ -231,8 +233,9 @@ void amdgpu_gfx_compute_queue_acquire(struct amdgpu_device *adev)
 	}
 
 	for (j = 0; j < num_xcc; j++) {
-		dev_dbg(adev->dev, "mec queue bitmap weight=%d\n",
-			bitmap_weight(adev->gfx.mec_bitmap[j].queue_bitmap, AMDGPU_MAX_COMPUTE_QUEUES));
+		if (!amdgpu_ps4_nodbg)
+			dev_dbg(adev->dev, "mec queue bitmap weight=%d\n",
+				bitmap_weight(adev->gfx.mec_bitmap[j].queue_bitmap, AMDGPU_MAX_COMPUTE_QUEUES));
 	}
 }
 
@@ -683,8 +686,9 @@ int amdgpu_gfx_enable_kcq(struct amdgpu_device *adev, int xcc_id)
 
 	amdgpu_device_flush_hdp(adev, NULL);
 
-	dev_info(adev->dev, "kiq ring mec %d pipe %d q %d\n", kiq_ring->me,
-		 kiq_ring->pipe, kiq_ring->queue);
+	if (!amdgpu_ps4_nodbg)
+		dev_info(adev->dev, "kiq ring mec %d pipe %d q %d\n", kiq_ring->me,
+			 kiq_ring->pipe, kiq_ring->queue);
 
 	spin_lock(&kiq->ring_lock);
 	r = amdgpu_ring_alloc(kiq_ring, kiq->pmf->map_queues_size *
@@ -814,11 +818,12 @@ static void amdgpu_gfx_do_off_ctrl(struct amdgpu_device *adev, bool enable,
 			    !amdgpu_dpm_set_powergating_by_smu(adev, AMD_IP_BLOCK_TYPE_GFX, false, 0)) {
 				adev->gfx.gfx_off_state = false;
 
-				if (adev->gfx.funcs->init_spm_golden) {
-					dev_dbg(adev->dev,
-						"GFXOFF is disabled, re-init SPM golden settings\n");
-					amdgpu_gfx_init_spm_golden(adev);
-				}
+					if (adev->gfx.funcs->init_spm_golden) {
+						if (!amdgpu_ps4_nodbg)
+							dev_dbg(adev->dev,
+								"GFXOFF is disabled, re-init SPM golden settings\n");
+						amdgpu_gfx_init_spm_golden(adev);
+					}
 			}
 		}
 

@@ -72,18 +72,20 @@ static void dump_message(struct apcie_dev *sc, int offset)
 	struct icc_message_hdr hdr;
 	memcpy_fromio(&hdr, sc->icc.spm + offset, ICC_HDR_SIZE);
 
-	sc_err("icc: hdr: [%02x] %02x:%04x unk %x #%d len %d cksum 0x%x\n",
-	       hdr.magic, hdr.major, hdr.minor, hdr.unknown, hdr.cookie,
-	       hdr.length, hdr.checksum);
-	len = min(hdr.length - ICC_HDR_SIZE, ICC_MAX_PAYLOAD);
-	if (len > 0) {
-		sc_err("icc: data:");
-		while (len--)
-			printk(" %02x", ioread8(sc->icc.spm + (offset++) +
-			                         ICC_HDR_SIZE));
-		printk("\n");
+		sc_err("icc: hdr: [%02x] %02x:%04x unk %x #%d len %d cksum 0x%x\n",
+		       hdr.magic, hdr.major, hdr.minor, hdr.unknown, hdr.cookie,
+		       hdr.length, hdr.checksum);
+		len = min(hdr.length - ICC_HDR_SIZE, ICC_MAX_PAYLOAD);
+		if (len > 0) {
+			sc_err("icc: data:");
+			if (!ps4_quiet_mode) {
+				while (len--)
+					printk(" %02x", ioread8(sc->icc.spm + (offset++) +
+					                         ICC_HDR_SIZE));
+				printk("\n");
+			}
+		}
 	}
-}
 
 static void handle_event(struct apcie_dev *sc, struct icc_message_hdr *msg)
 {
@@ -313,7 +315,8 @@ __maybe_unused void resetUsbPort(void)
 	
 	//Turn OFF Usb
 	ret = apcie_icc_cmd(5, 0x10, &off, sizeof(off), resp, 20);
-	printk("Turn OFF USB: ret=%d, reply %02x %02x %02x %02x", ret, resp[0], resp[1], resp[2], resp[3]);
+	if (!ps4_quiet_mode)
+		printk("Turn OFF USB: ret=%d, reply %02x %02x %02x %02x", ret, resp[0], resp[1], resp[2], resp[3]);
 	if(ret < 0)
 	{
 		printk("Turn off USB failed!");
@@ -322,7 +325,8 @@ __maybe_unused void resetUsbPort(void)
 	
 	//Turn ON Usb
 	ret = apcie_icc_cmd(5, 0x10, &on, sizeof(on), resp, 20);
-	printk("Turn ON USB: ret=%d, reply %02x %02x %02x %02x", ret, resp[0], resp[1], resp[2], resp[3]);
+	if (!ps4_quiet_mode)
+		printk("Turn ON USB: ret=%d, reply %02x %02x %02x %02x", ret, resp[0], resp[1], resp[2], resp[3]);
 	if(ret < 0)
 	{
 		printk("Turn on USB failed");
@@ -356,7 +360,8 @@ void resetBtWlan(void)
 
 	//Turn ON bt/wlan
 	ret = apcie_icc_cmd(5, 0, &on, sizeof(on), resp, 20);
-	printk("Turn ON BT/WLAN: ret=%d, reply %02x %02x %02x %02x", ret, resp[0], resp[1], resp[2], resp[3]);
+	if (!ps4_quiet_mode)
+		printk("Turn ON BT/WLAN: ret=%d, reply %02x %02x %02x %02x", ret, resp[0], resp[1], resp[2], resp[3]);
 	if(ret < 0)
 	{
 		printk("Turn on bt/wlan failed");
@@ -381,19 +386,22 @@ void do_icc_init(void) {
 	int ret;
 	// test: get FW version
 	ret = apcie_icc_cmd(2, 6, NULL, 0, reply, 0x30);
-	printk("ret=%d, reply %02x %02x %02x %02x %02x %02x %02x %02x\n", ret,
-		reply[0], reply[1], reply[2], reply[3],
-		reply[4], reply[5], reply[6], reply[7]);
+	if (!ps4_quiet_mode)
+		printk("ret=%d, reply %02x %02x %02x %02x %02x %02x %02x %02x\n", ret,
+			reply[0], reply[1], reply[2], reply[3],
+			reply[4], reply[5], reply[6], reply[7]);
 	ret = apcie_icc_cmd(1, 0, &svc, 1, reply, 0x30);
-	printk("ret=%d, reply %02x %02x %02x %02x %02x %02x %02x %02x\n", ret,
-		reply[0], reply[1], reply[2], reply[3],
-		reply[4], reply[5], reply[6], reply[7]);
+	if (!ps4_quiet_mode)
+		printk("ret=%d, reply %02x %02x %02x %02x %02x %02x %02x %02x\n", ret,
+			reply[0], reply[1], reply[2], reply[3],
+			reply[4], reply[5], reply[6], reply[7]);
 
 	/* Set the LED to something nice */
 	ret = apcie_icc_cmd(9, 0x20, led_config, ARRAY_SIZE(led_config), reply, 0x30);
-	printk("ret=%d, reply %02x %02x %02x %02x %02x %02x %02x %02x\n", ret,
-		reply[0], reply[1], reply[2], reply[3],
-		reply[4], reply[5], reply[6], reply[7]);
+	if (!ps4_quiet_mode)
+		printk("ret=%d, reply %02x %02x %02x %02x %02x %02x %02x %02x\n", ret,
+			reply[0], reply[1], reply[2], reply[3],
+			reply[4], reply[5], reply[6], reply[7]);
 }
 
 static void icc_shutdown(void)

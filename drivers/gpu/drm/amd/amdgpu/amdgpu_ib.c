@@ -71,7 +71,8 @@ int amdgpu_ib_get(struct amdgpu_device *adev, struct amdgpu_vm *vm,
 		r = amdgpu_sa_bo_new(&adev->ib_pools[pool_type],
 				     &ib->sa_bo, size);
 		if (r) {
-			dev_err(adev->dev, "failed to get a new IB (%d)\n", r);
+			if (!amdgpu_ps4_nodbg)
+				dev_err(adev->dev, "failed to get a new IB (%d)\n", r);
 			return r;
 		}
 
@@ -171,18 +172,21 @@ int amdgpu_ib_schedule(struct amdgpu_ring *ring, unsigned int num_ibs,
 	}
 
 	if (!ring->sched.ready) {
-		dev_err(adev->dev, "couldn't schedule ib on ring <%s>\n", ring->name);
+		if (!amdgpu_ps4_nodbg)
+			dev_err(adev->dev, "couldn't schedule ib on ring <%s>\n", ring->name);
 		return -EINVAL;
 	}
 
 	if (vm && !job->vmid) {
-		dev_err(adev->dev, "VM IB without ID\n");
+		if (!amdgpu_ps4_nodbg)
+			dev_err(adev->dev, "VM IB without ID\n");
 		return -EINVAL;
 	}
 
 	if ((ib->flags & AMDGPU_IB_FLAGS_SECURE) &&
 	    (!ring->funcs->secure_submission_supported)) {
-		dev_err(adev->dev, "secure submissions not supported on ring <%s>\n", ring->name);
+		if (!amdgpu_ps4_nodbg)
+			dev_err(adev->dev, "secure submissions not supported on ring <%s>\n", ring->name);
 		return -EINVAL;
 	}
 
@@ -191,7 +195,8 @@ int amdgpu_ib_schedule(struct amdgpu_ring *ring, unsigned int num_ibs,
 
 	r = amdgpu_ring_alloc(ring, alloc_size);
 	if (r) {
-		dev_err(adev->dev, "scheduling IB failed (%d).\n", r);
+		if (!amdgpu_ps4_nodbg)
+			dev_err(adev->dev, "scheduling IB failed (%d).\n", r);
 		return r;
 	}
 
@@ -292,7 +297,8 @@ int amdgpu_ib_schedule(struct amdgpu_ring *ring, unsigned int num_ibs,
 
 	r = amdgpu_fence_emit(ring, f, af, fence_flags);
 	if (r) {
-		dev_err(adev->dev, "failed to emit fence (%d)\n", r);
+		if (!amdgpu_ps4_nodbg)
+			dev_err(adev->dev, "failed to emit fence (%d)\n", r);
 		if (job && job->vmid)
 			amdgpu_vmid_reset(adev, ring->vm_hub, job->vmid);
 		amdgpu_ring_undo(ring);

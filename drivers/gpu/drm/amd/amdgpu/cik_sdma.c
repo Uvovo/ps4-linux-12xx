@@ -112,7 +112,8 @@ static int cik_sdma_init_microcode(struct amdgpu_device *adev)
 	const char *chip_name;
 	int err = 0, i;
 
-	DRM_DEBUG("\n");
+	if (!amdgpu_ps4_nodbg)
+		DRM_DEBUG("\n");
 
 	switch (adev->asic_type) {
 	case CHIP_BONAIRE:
@@ -151,10 +152,11 @@ static int cik_sdma_init_microcode(struct amdgpu_device *adev)
 		if (err)
 			goto out;
 	}
-out:
+	out:
 	if (err) {
-		pr_err("cik_sdma: Failed to load firmware \"%s_sdma%s.bin\"\n",
-		       chip_name, i == 0 ? "" : "1");
+		if (!amdgpu_ps4_nodbg)
+			pr_err("cik_sdma: Failed to load firmware \"%s_sdma%s.bin\"\n",
+			       chip_name, i == 0 ? "" : "1");
 		for (i = 0; i < adev->sdma.num_instances; i++)
 			amdgpu_ucode_release(&adev->sdma.instance[i].fw);
 	}
@@ -362,16 +364,17 @@ static void cik_ctx_switch_enable(struct amdgpu_device *adev, bool enable)
 			value = (value + 1) >> 1;
 			unit++;
 		}
-		if (unit > (SDMA0_PHASE0_QUANTUM__UNIT_MASK >>
-			    SDMA0_PHASE0_QUANTUM__UNIT__SHIFT)) {
-			value = (SDMA0_PHASE0_QUANTUM__VALUE_MASK >>
-				 SDMA0_PHASE0_QUANTUM__VALUE__SHIFT);
-			unit = (SDMA0_PHASE0_QUANTUM__UNIT_MASK >>
-				SDMA0_PHASE0_QUANTUM__UNIT__SHIFT);
-			WARN_ONCE(1,
-			"clamping sdma_phase_quantum to %uK clock cycles\n",
-				  value << unit);
-		}
+			if (unit > (SDMA0_PHASE0_QUANTUM__UNIT_MASK >>
+				    SDMA0_PHASE0_QUANTUM__UNIT__SHIFT)) {
+				value = (SDMA0_PHASE0_QUANTUM__VALUE_MASK >>
+					 SDMA0_PHASE0_QUANTUM__VALUE__SHIFT);
+				unit = (SDMA0_PHASE0_QUANTUM__UNIT_MASK >>
+					SDMA0_PHASE0_QUANTUM__UNIT__SHIFT);
+				if (!amdgpu_ps4_nodbg)
+					WARN_ONCE(1,
+					"clamping sdma_phase_quantum to %uK clock cycles\n",
+						  value << unit);
+			}
 		phase_quantum =
 			value << SDMA0_PHASE0_QUANTUM__VALUE__SHIFT |
 			unit  << SDMA0_PHASE0_QUANTUM__UNIT__SHIFT;
@@ -1084,7 +1087,8 @@ static int cik_sdma_soft_reset(struct amdgpu_ip_block *ip_block)
 	if (srbm_soft_reset) {
 		tmp = RREG32(mmSRBM_SOFT_RESET);
 		tmp |= srbm_soft_reset;
-		dev_info(adev->dev, "SRBM_SOFT_RESET=0x%08X\n", tmp);
+			if (!amdgpu_ps4_nodbg)
+				dev_info(adev->dev, "SRBM_SOFT_RESET=0x%08X\n", tmp);
 		WREG32(mmSRBM_SOFT_RESET, tmp);
 		tmp = RREG32(mmSRBM_SOFT_RESET);
 
@@ -1155,7 +1159,8 @@ static int cik_sdma_process_trap_irq(struct amdgpu_device *adev,
 
 	instance_id = (entry->ring_id & 0x3) >> 0;
 	queue_id = (entry->ring_id & 0xc) >> 2;
-	DRM_DEBUG("IH: SDMA trap\n");
+	if (!amdgpu_ps4_nodbg)
+		DRM_DEBUG("IH: SDMA trap\n");
 	switch (instance_id) {
 	case 0:
 		switch (queue_id) {
@@ -1194,7 +1199,8 @@ static int cik_sdma_process_illegal_inst_irq(struct amdgpu_device *adev,
 {
 	u8 instance_id;
 
-	DRM_ERROR("Illegal instruction in SDMA command stream\n");
+	if (!amdgpu_ps4_nodbg)
+		DRM_ERROR("Illegal instruction in SDMA command stream\n");
 	instance_id = (entry->ring_id & 0x3) >> 0;
 	drm_sched_fault(&adev->sdma.instance[instance_id].ring.sched);
 	return 0;

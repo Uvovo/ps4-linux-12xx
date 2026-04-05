@@ -231,6 +231,7 @@ int amdgpu_mes_log_enable = 0;
 int amdgpu_mes_kiq;
 int amdgpu_uni_mes = 1;
 int amdgpu_noretry = -1;
+int amdgpu_ps4_nodbg;
 int amdgpu_force_asic_type = -1;
 int amdgpu_tmz = -1; /* auto */
 uint amdgpu_freesync_vid_mode;
@@ -696,8 +697,12 @@ module_param_named(mcbp, amdgpu_mcbp, int, 0444);
  * (-1 = auto (default), 0 = disabled, 1 = enabled, 2 = use ip_discovery table from file)
  */
 MODULE_PARM_DESC(discovery,
-	"Allow driver to discover hardware IPs from IP Discovery table at the top of VRAM");
+		"Allow driver to discover hardware IPs from IP Discovery table at the top of VRAM");
 module_param_named(discovery, amdgpu_discovery, int, 0444);
+
+MODULE_PARM_DESC(ps4_nodbg,
+		"Bypass selected high-frequency PS4 AMDGPU debug/info prints (0 = disabled (default), 1 = enabled)");
+module_param_named(ps4_nodbg, amdgpu_ps4_nodbg, int, 0644);
 
 /**
  * DOC: mes (int)

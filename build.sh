@@ -475,6 +475,15 @@ if [[ "$DO_BUILD" == "1" ]]; then
         echo -e "\e[1;33m[!]\e[0m WARNING: extra_firmware/ missing or empty -- run fetch firmware first." >&2
     fi
 
+    scripts/config --disable CONFIG_DEBUG_KERNEL
+    scripts/config --disable CONFIG_DEBUG_INFO
+    scripts/config --disable CONFIG_PROVE_LOCKING
+    scripts/config --disable CONFIG_LOCKDEP
+    scripts/config --disable CONFIG_KASAN
+    scripts/config --disable CONFIG_FTRACE
+    scripts/config --disable CONFIG_SCHED_DEBUG
+    scripts/config --disable CONFIG_DEBUG_FS
+
     echo -e "\e[1;34m[*]\e[0m Running olddefconfig..."
     make "${MAKE_OPTS[@]}" olddefconfig
 

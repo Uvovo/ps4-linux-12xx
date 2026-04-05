@@ -152,11 +152,13 @@ struct apcie_dev {
 	struct apcie_icc_dev icc;
 };
 
+extern int ps4_quiet_mode;
+
 #define sc_err(...) dev_info(&sc->pdev->dev, __VA_ARGS__)
-#define sc_warn(...) dev_info(&sc->pdev->dev, __VA_ARGS__)
-#define sc_notice(...) dev_info(&sc->pdev->dev, __VA_ARGS__)
-#define sc_info(...) dev_info(&sc->pdev->dev, __VA_ARGS__)
-#define sc_dbg(...) dev_info(&sc->pdev->dev, __VA_ARGS__)
+#define sc_warn(...) do { if (!ps4_quiet_mode) dev_info(&sc->pdev->dev, __VA_ARGS__); } while (0)
+#define sc_notice(...) do { if (!ps4_quiet_mode) dev_info(&sc->pdev->dev, __VA_ARGS__); } while (0)
+#define sc_info(...) do { if (!ps4_quiet_mode) dev_info(&sc->pdev->dev, __VA_ARGS__); } while (0)
+#define sc_dbg(...) do { if (!ps4_quiet_mode) dev_info(&sc->pdev->dev, __VA_ARGS__); } while (0)
 
 static inline int apcie_irqnum(struct apcie_dev *sc, int index)
 {

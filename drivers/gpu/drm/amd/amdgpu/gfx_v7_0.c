@@ -1345,7 +1345,8 @@ static int gfx_v7_0_init_microcode(struct amdgpu_device *adev)
 	const char *chip_name;
 	int err;
 
-	DRM_DEBUG("\n");
+	if (!amdgpu_ps4_nodbg)
+		DRM_DEBUG("\n");
 
 	switch (adev->asic_type) {
 	case CHIP_BONAIRE:
@@ -5234,7 +5235,8 @@ static int gfx_v7_0_soft_reset(struct amdgpu_ip_block *ip_block)
 		if (grbm_soft_reset) {
 			tmp = RREG32(mmGRBM_SOFT_RESET);
 			tmp |= grbm_soft_reset;
-			dev_info(adev->dev, "GRBM_SOFT_RESET=0x%08X\n", tmp);
+			if (!amdgpu_ps4_nodbg)
+				dev_info(adev->dev, "GRBM_SOFT_RESET=0x%08X\n", tmp);
 			WREG32(mmGRBM_SOFT_RESET, tmp);
 			tmp = RREG32(mmGRBM_SOFT_RESET);
 
@@ -5248,7 +5250,8 @@ static int gfx_v7_0_soft_reset(struct amdgpu_ip_block *ip_block)
 		if (srbm_soft_reset) {
 			tmp = RREG32(mmSRBM_SOFT_RESET);
 			tmp |= srbm_soft_reset;
-			dev_info(adev->dev, "SRBM_SOFT_RESET=0x%08X\n", tmp);
+			if (!amdgpu_ps4_nodbg)
+				dev_info(adev->dev, "SRBM_SOFT_RESET=0x%08X\n", tmp);
 			WREG32(mmSRBM_SOFT_RESET, tmp);
 			tmp = RREG32(mmSRBM_SOFT_RESET);
 
@@ -5312,11 +5315,13 @@ static void gfx_v7_0_set_compute_eop_interrupt_state(struct amdgpu_device *adev,
 			mec_int_cntl_reg = mmCP_ME1_PIPE3_INT_CNTL;
 			break;
 		default:
-			DRM_DEBUG("invalid pipe %d\n", pipe);
+			if (!amdgpu_ps4_nodbg)
+				DRM_DEBUG("invalid pipe %d\n", pipe);
 			return;
 		}
 	} else {
-		DRM_DEBUG("invalid me %d\n", me);
+		if (!amdgpu_ps4_nodbg)
+			DRM_DEBUG("invalid me %d\n", me);
 		return;
 	}
 
@@ -5433,7 +5438,8 @@ static int gfx_v7_0_eop_irq(struct amdgpu_device *adev,
 	struct amdgpu_ring *ring;
 	int i;
 
-	DRM_DEBUG("IH: CP EOP\n");
+	if (!amdgpu_ps4_nodbg)
+		DRM_DEBUG("IH: CP EOP\n");
 	me_id = (entry->ring_id & 0x0c) >> 2;
 	pipe_id = (entry->ring_id & 0x03) >> 0;
 	switch (me_id) {

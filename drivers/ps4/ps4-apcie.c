@@ -30,6 +30,11 @@ static const int subfuncs_per_func[AEOLIA_NUM_FUNCS] = {
 	4, 4, 4, 4, 31, 2, 2, 4
 };
 
+int ps4_quiet_mode;
+module_param_named(quiet_mode, ps4_quiet_mode, int, 0644);
+MODULE_PARM_DESC(quiet_mode,
+		 "Bypass non-fatal PS4 platform and bridge debug/info prints (0 = disabled (default), 1 = enabled)");
+
 static inline u32 glue_read32(struct apcie_dev *sc, u32 offset) {
 	return ioread32(sc->bar4 + offset);
 }

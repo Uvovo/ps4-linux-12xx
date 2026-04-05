@@ -38,6 +38,8 @@
 #include <drm/drm_edid.h>
 
 #include <drm/drm_bridge.h>
+
+extern int ps4_quiet_mode;
 #include <drm/drm_encoder.h>
 
 #include <linux/err.h>
@@ -328,7 +330,8 @@ void ps4_bridge_mode_set(struct drm_bridge *bridge,
 	/* This gets called before pre_enable/enable, so we just stash
 	 * the vic ID for later */
 	mn_bridge->mode = drm_match_cea_mode(adjusted_mode);
-	DRM_DEBUG_KMS("vic mode: %d\n", mn_bridge->mode);
+	if (!ps4_quiet_mode)
+		DRM_DEBUG_KMS("vic mode: %d\n", mn_bridge->mode);
 	if (!mn_bridge->mode) {
 		DRM_ERROR("attempted to set non-CEA mode\n");
 	}
@@ -337,8 +340,10 @@ void ps4_bridge_mode_set(struct drm_bridge *bridge,
 static void ps4_bridge_pre_enable(struct drm_bridge *bridge)
 {
 	struct ps4_bridge *mn_bridge = bridge_to_ps4_bridge(bridge);
-	DRM_DEBUG_KMS("ps4_bridge_pre_enable\n");
-	DRM_DEBUG("Enable ps4_bridge_pre_enable\n");
+	if (!ps4_quiet_mode) {
+		DRM_DEBUG_KMS("ps4_bridge_pre_enable\n");
+		DRM_DEBUG("Enable ps4_bridge_pre_enable\n");
+	}
 	mutex_lock(&mn_bridge->mutex);
 	cq_init(&mn_bridge->cq, 4);
 
@@ -411,7 +416,8 @@ static void ps4_bridge_enable(struct drm_bridge *bridge)
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
 	u8 dp[3];
 
-	DRM_DEBUG("Enable PS4_BRIDGE_ENABLE\n");
+	if (!ps4_quiet_mode)
+		DRM_DEBUG("Enable PS4_BRIDGE_ENABLE\n");
 	if (!mn_bridge->mode) {
 		DRM_ERROR("mode not available\n");
 		return;
@@ -422,7 +428,8 @@ static void ps4_bridge_enable(struct drm_bridge *bridge)
 		return;
 	}
 
-	DRM_DEBUG_KMS("ps4_bridge_enable (mode: %d)\n", mn_bridge->mode);
+	if (!ps4_quiet_mode)
+		DRM_DEBUG_KMS("ps4_bridge_enable (mode: %d)\n", mn_bridge->mode);
 
 	/* Here come the dragons */
 
@@ -671,7 +678,8 @@ static void ps4_bridge_enable(struct drm_bridge *bridge)
 static void ps4_bridge_disable(struct drm_bridge *bridge)
 {
 	struct ps4_bridge *mn_bridge = bridge_to_ps4_bridge(bridge);
-	DRM_DEBUG_KMS("ps4_bridge_disable\n");
+	if (!ps4_quiet_mode)
+		DRM_DEBUG_KMS("ps4_bridge_disable\n");
 
 	mutex_lock(&mn_bridge->mutex);
 	cq_init(&mn_bridge->cq, 4);
@@ -686,7 +694,8 @@ static void ps4_bridge_disable(struct drm_bridge *bridge)
 static void ps4_bridge_post_disable(struct drm_bridge *bridge)
 {
 	/* struct ps4_bridge *mn_bridge = bridge_to_mn864729(bridge); */
-	DRM_DEBUG_KMS("ps4_bridge_post_disable\n");
+	if (!ps4_quiet_mode)
+		DRM_DEBUG_KMS("ps4_bridge_post_disable\n");
 }
 
 /* Hardcoded modes, since we don't really know how to do custom modes yet.
@@ -779,7 +788,8 @@ enum drm_connector_status ps4_bridge_detect(struct drm_connector *connector,
 	reg = mn_bridge->cq.reply.databuf[3];
 	mutex_unlock(&mn_bridge->mutex);
 
-	DRM_DEBUG_KMS("TMONREG=0x%02x dpcd_ret=%d\n", reg, dpcd_ret);
+	if (!ps4_quiet_mode)
+		DRM_DEBUG_KMS("TMONREG=0x%02x dpcd_ret=%d\n", reg, dpcd_ret);
 
 	/*
 	 * TMONREG_HPD latches high on first connection and is never cleared
