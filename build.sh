@@ -16,9 +16,11 @@ set -euo pipefail
 OUTPUT_DIR="${PWD}/out"
 FIRMWARE_DIR="${PWD}/extra_firmware"
 BASE_URL="https://gitlab.com/kernel-firmware/linux-firmware/-/raw/main"
-
-export KCFLAGS="-march=btver2 -mtune=btver2 -O3"
-export KAFLAGS="-march=btver2 -mtune=btver2 -O3"
+# ik you probably want to crucify me for adding some of these new flags and downgrading to -Os, but this is just the kernel and id prefer it not taking the entire instruction/data cache, (this also goes for server too, more cache the more performant things will be)
+# i also set vectorization to cheap to ensure we still try to get some of its benefits in some code but not use it all the time, cause the avx instructions will be used by apps sometimes, and i dont want register contention ruining our memory latency cause iirc it will spill over to cache or the ram which is very bad
+# omitting the frame pointer is kinda useful to help a lil bit, not sure by how much though. btver2 does do a lot in the way of hinting to the compiler. plt is cool cus we also get more registers freed for things to use
+export KCFLAGS="-march=btver2 -mtune=btver2 -Os"
+export KAFLAGS="-march=btver2 -mtune=btver2 -Os"
 export HOSTCFLAGS="-Wno-error=incompatible-pointer-types-discards-qualifiers"
 
 PROFILE="server"
@@ -311,11 +313,51 @@ if [[ "$DO_BUILD" == "1" ]]; then
     scripts/config --enable  CONFIG_SCHED_AUTOGROUP
 
     # ── BPF ──────────────────────────────────────────────────────────────
-    # BTF required for sched_ext kfunc resolution at BPF verifier time.
+    # sched_ext depends on BPF + BTF in this kernel tree.
     scripts/config --enable  CONFIG_BPF_SYSCALL
     scripts/config --enable  CONFIG_BPF_JIT
+    scripts/config --enable  CONFIG_BPF_JIT_ALWAYS_ON
     scripts/config --enable  CONFIG_BPF_JIT_DEFAULT_ON
+    scripts/config --disable CONFIG_BPF_UNPRIV_DEFAULT_OFF
+
+    # ── BTF / debug metadata ─────────────────────────────────────────────
+    # Keep the minimum compile-time type metadata needed by sched_ext.
+    # This is not the same as turning on runtime debug facilities.
+    scripts/config --enable  CONFIG_DEBUG_INFO
+    scripts/config --enable  CONFIG_DEBUG_INFO_DWARF4
+    scripts/config --disable CONFIG_DEBUG_INFO_DWARF5
+    scripts/config --disable CONFIG_DEBUG_INFO_REDUCED
+    scripts/config --disable CONFIG_DEBUG_INFO_SPLIT
     scripts/config --enable  CONFIG_DEBUG_INFO_BTF
+    scripts/config --enable  CONFIG_DEBUG_INFO_BTF_MODULES
+
+    # ── Runtime debug / tracing ──────────────────────────────────────────
+    # These are development-only costs for this tree. Keep runtime lean.
+    scripts/config --disable CONFIG_DEBUG_KERNEL
+    scripts/config --disable CONFIG_PROVE_LOCKING
+    scripts/config --disable CONFIG_LOCKDEP
+    scripts/config --disable CONFIG_KASAN
+    scripts/config --disable CONFIG_FTRACE
+    scripts/config --disable CONFIG_SCHED_DEBUG
+    scripts/config --disable CONFIG_DEBUG_FS
+
+    # ── Mitigation / hardening trims ─────────────────────────────────────
+    # This target is a fixed console box; prefer lower overhead.
+    scripts/config --disable CONFIG_CPU_MITIGATIONS
+    scripts/config --disable CONFIG_STACKPROTECTOR
+    scripts/config --disable CONFIG_STACKPROTECTOR_STRONG
+    scripts/config --disable CONFIG_RANDOMIZE_KSTACK_OFFSET_DEFAULT
+    scripts/config --disable CONFIG_SLAB_FREELIST_HARDENED
+    scripts/config --disable CONFIG_SLAB_FREELIST_RANDOM
+    scripts/config --disable CONFIG_SHUFFLE_PAGE_ALLOCATOR
+    scripts/config --disable CONFIG_INIT_ON_ALLOC_DEFAULT_ON
+    scripts/config --disable CONFIG_INIT_ON_FREE_DEFAULT_ON
+    scripts/config --disable CONFIG_FORTIFY_SOURCE
+    scripts/config --disable CONFIG_HARDENED_USERCOPY
+    scripts/config --disable CONFIG_HARDENED_USERCOPY_DEFAULT_ON
+    scripts/config --disable CONFIG_SECURITY_DMESG_RESTRICT
+    scripts/config --disable CONFIG_IOMMU_DEFAULT_DMA_STRICT
+    scripts/config --enable  CONFIG_IOMMU_DEFAULT_DMA_LAZY
 
     # ── I/O schedulers ───────────────────────────────────────────────────
     # Build all in; profile selects the default.
@@ -346,9 +388,6 @@ if [[ "$DO_BUILD" == "1" ]]; then
         scripts/config --disable CONFIG_SCHED_BORE
         scripts/config --disable CONFIG_SCHED_AUTOGROUP
         scripts/config --disable CONFIG_CPU_FREQ_GOV_REFLEX
-
-        # Keep the server profile on the safer side for exposed services.
-        scripts/config --enable  CONFIG_CPU_MITIGATIONS
 
         # Performance governor: clocks at max, zero scaling latency.
         scripts/config --disable CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL
@@ -395,6 +434,21 @@ if [[ "$DO_BUILD" == "1" ]]; then
         scripts/config --disable CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS
         scripts/config --enable  CONFIG_TRANSPARENT_HUGEPAGE_MADVISE
 
+        # Container / firewall stack belongs on the server profile.
+        scripts/config --enable  CONFIG_NETFILTER
+        scripts/config --enable  CONFIG_NETFILTER_ADVANCED
+        scripts/config --enable  CONFIG_NETFILTER_XTABLES
+        scripts/config --enable  CONFIG_NF_TABLES
+        scripts/config --enable  CONFIG_NF_TABLES_INET
+        scripts/config --enable  CONFIG_NF_TABLES_IPV4
+        scripts/config --enable  CONFIG_NF_TABLES_IPV6
+        scripts/config --enable  CONFIG_IP_NF_IPTABLES
+        scripts/config --enable  CONFIG_IP6_NF_IPTABLES
+        scripts/config --enable  CONFIG_BRIDGE
+        scripts/config --enable  CONFIG_BRIDGE_NETFILTER
+        scripts/config --enable  CONFIG_VETH
+        scripts/config --enable  CONFIG_OVERLAY_FS
+
         # mq-deadline: predictable latency under queue depth, better for
         # server HDD/SSD throughput than BFQ.
         scripts/config --set-str CONFIG_DEFAULT_IOSCHED "mq-deadline"
@@ -413,6 +467,7 @@ if [[ "$DO_BUILD" == "1" ]]; then
         # ── Mitigations ──────────────────────────────────────────────────
         # Dedicated desktop/gaming box: strip x86 mitigation overhead for
         # the lowest syscall and context-switch latency on 6.18 LTS.
+        # likelyhood of someone exploiting these anyways is extremellllyyyy low on a home use (not server, but maybe just local stuff) system anyways
         scripts/config --disable CONFIG_CPU_MITIGATIONS
 
         # ── Cgroup / memcg ───────────────────────────────────────────────
@@ -420,11 +475,14 @@ if [[ "$DO_BUILD" == "1" ]]; then
         scripts/config --disable CONFIG_MEMCG
         scripts/config --disable CONFIG_CGROUP_SCHED
         scripts/config --disable CONFIG_FAIR_GROUP_SCHED
-        scripts/config --disable CONFIG_RT_GROUP_SCHED
+        scripts/config --enable  CONFIG_RT_GROUP_SCHED
         scripts/config --disable CONFIG_CFS_BANDWIDTH
 
         # ── BORE ─────────────────────────────────────────────────────────
         scripts/config --enable  CONFIG_SCHED_BORE
+        # At HZ=250, BORE's tick-quantized base slice resolves to 4 ms.
+        # Make that floor explicit so the gaming profile stays stable.
+        scripts/config --set-val CONFIG_MIN_BASE_SLICE_NS 4000000
 
         # ── CPU frequency ─────────────────────────────────────────────────
         scripts/config --enable  CONFIG_CPU_FREQ_GOV_REFLEX
@@ -434,24 +492,41 @@ if [[ "$DO_BUILD" == "1" ]]; then
 
         # ── Timer / preemption ────────────────────────────────────────────
         # HZ=1000 + NO_HZ_FULL: 1ms resolution + tickless on game cores.
-        scripts/config --disable CONFIG_HZ_250
+        # why tf hz=1000, just makes the cpu work more when it doesnt have to
+        scripts/config --enable CONFIG_HZ_250
         scripts/config --disable CONFIG_HZ_300
         scripts/config --disable CONFIG_HZ_100
-        scripts/config --enable  CONFIG_HZ_1000
-        scripts/config --set-val CONFIG_HZ 1000
-        scripts/config --disable CONFIG_NO_HZ_IDLE
+        scripts/config --disable  CONFIG_HZ_1000
+        scripts/config --set-val CONFIG_HZ 250
+        scripts/config --enable  CONFIG_NO_HZ_IDLE
         scripts/config --enable  CONFIG_NO_HZ_FULL
 
         # Full preemption: kernel preemptible anywhere safe.
         scripts/config --enable  CONFIG_PREEMPT
-        scripts/config --disable CONFIG_PREEMPT_VOLUNTARY
+        scripts/config --enable  CONFIG_PREEMPT_VOLUNTARY
         scripts/config --disable CONFIG_PREEMPT_NONE
 
         # Always-on THP fits desktop/gaming better than server duty:
         # shader caches, Wine/Proton, and larger userspace heaps benefit.
+        # to contradict, we dont need games/apps using extra ram when we dont need them to. This could go more useful to the fs cache which greatly improves responsiveness
         scripts/config --enable  CONFIG_TRANSPARENT_HUGEPAGE
-        scripts/config --enable  CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS
-        scripts/config --disable CONFIG_TRANSPARENT_HUGEPAGE_MADVISE
+        scripts/config --disable CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS
+        scripts/config --enable  CONFIG_TRANSPARENT_HUGEPAGE_MADVISE
+
+        # Keep Docker / firewall plumbing out of the general desktop build.
+        scripts/config --disable CONFIG_OVERLAY_FS
+        scripts/config --disable CONFIG_VETH
+        scripts/config --disable CONFIG_BRIDGE_NETFILTER
+        scripts/config --disable CONFIG_BRIDGE
+        scripts/config --disable CONFIG_IP6_NF_IPTABLES
+        scripts/config --disable CONFIG_IP_NF_IPTABLES
+        scripts/config --disable CONFIG_NF_TABLES_IPV6
+        scripts/config --disable CONFIG_NF_TABLES_IPV4
+        scripts/config --disable CONFIG_NF_TABLES_INET
+        scripts/config --disable CONFIG_NF_TABLES
+        scripts/config --disable CONFIG_NETFILTER_XTABLES
+        scripts/config --disable CONFIG_NETFILTER_ADVANCED
+        scripts/config --disable CONFIG_NETFILTER
 
         # ── I/O ───────────────────────────────────────────────────────────
         # BFQ: isolates game I/O from background noise.
@@ -517,9 +592,10 @@ if [[ "$DO_BUILD" == "1" ]]; then
     echo -e "\e[1;32m║\e[0m  bzImage: $(printf "%-39s" "${OUTPUT_DIR}/bzImage")\e[1;32m║\e[0m"
     echo -e "\e[1;32m╚══════════════════════════════════════════════════╝\e[0m"
     echo ""
+    # removing extra cpu cores hurts performance on literally everything, kernel is smart enough to schedule threads itself. Maybe in a worst case scenario it will have issues but like why not just disable one core instead of 2? eh whatever
+    # pti and spectre v2 toggle aint needed btw, mitigations were disabled in the kernel itself for gaming/general use profile and will be determined at bootup
     if [[ "$PROFILE" == "general" ]]; then
         echo "Kernel cmdline (add to your kexec invocation):"
-        echo "  mitigations=off pti=off spectre_v2=off"
         echo "  isolcpus=2-7 nohz_full=2-7 rcu_nocbs=2-7 irqaffinity=0-1 threadirqs"
         echo ""
         echo "Post-boot sysctl (add to /etc/sysctl.d/99-ps4-gaming.conf):"
