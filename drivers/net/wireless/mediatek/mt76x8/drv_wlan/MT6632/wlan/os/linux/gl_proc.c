@@ -146,6 +146,24 @@ static UINT_8 g_aucProcBuf[3000];
 
 /* This u32 is only for DriverCmdRead/Write, should not be used by other function */
 static UINT_32 g_u4NextDriverReadLen;
+
+static int procCopyUserInput(const char __user *buffer, size_t count)
+{
+	char *kbuf;
+	size_t copy_len = min_t(size_t, count, sizeof(g_aucProcBuf) - 1);
+
+	kbuf = memdup_user_nul(buffer, copy_len);
+	if (IS_ERR(kbuf)) {
+		DBGLOG(INIT, ERROR, "error of copy from user\n");
+		return PTR_ERR(kbuf);
+	}
+
+	kalMemSet(g_aucProcBuf, 0, sizeof(g_aucProcBuf));
+	kalMemCopy(g_aucProcBuf, kbuf, copy_len + 1);
+	kfree(kbuf);
+
+	return 0;
+}
 /*******************************************************************************
 *                                 M A C R O S
 ********************************************************************************
@@ -544,26 +562,17 @@ static ssize_t procDriverCmdRead(struct file *filp, char __user *buf, size_t cou
 static ssize_t procDriverCmdWrite(struct file *file, const char __user *buffer,
 										size_t count, loff_t *data)
 {
+	int ret;
 
 /*	UINT_32 u4DriverCmd, u4DriverValue;
 *	UINT_8 *temp = &g_aucProcBuf[0];
 */
-	UINT_32 u4CopySize = sizeof(g_aucProcBuf);
 	P_GLUE_INFO_T prGlueInfo;
 /*	PARAM_CUSTOM_P2P_SET_STRUCT_T rSetP2P; */
 
-
-	kalMemSet(g_aucProcBuf, 0, u4CopySize);
-	if (u4CopySize >= (count+1))
-		u4CopySize = count;
-	else
-		u4CopySize -= 1;
-
-	if (copy_from_user(g_aucProcBuf, buffer, u4CopySize)) {
-		DBGLOG(INIT, ERROR, "error of copy from user\n");
-		return -EFAULT;
-	}
-	g_aucProcBuf[u4CopySize] = '\0';
+	ret = procCopyUserInput(buffer, count);
+	if (ret)
+		return ret;
 
 
 	prGlueInfo = g_prGlueInfo_proc;
@@ -581,21 +590,13 @@ static ssize_t procDriverCmdWrite(struct file *file, const char __user *buffer,
 static ssize_t procDbgLevelWrite(struct file *file, const char __user *buffer,
 										size_t count, loff_t *data)
 {
+	int ret;
 	UINT_32 u4NewDbgModule, u4NewDbgLevel;
 	UINT_8 *temp = &g_aucProcBuf[0];
-	UINT_32 u4CopySize = sizeof(g_aucProcBuf);
 
-	kalMemSet(g_aucProcBuf, 0, u4CopySize);
-	if (u4CopySize >= count+1)
-		u4CopySize = count;
-	else
-		u4CopySize -= 1;
-
-	if (copy_from_user(g_aucProcBuf, buffer, u4CopySize)) {
-		DBGLOG(INIT, ERROR, "error of copy from user\n");
-		return -EFAULT;
-	}
-	g_aucProcBuf[u4CopySize] = '\0';
+	ret = procCopyUserInput(buffer, count);
+	if (ret)
+		return ret;
 
 	while (temp) {
 		if (sscanf(temp, "0x%x:0x%x", &u4NewDbgModule, &u4NewDbgLevel) != 2)  {
@@ -1184,21 +1185,13 @@ static ssize_t procRoamRead(struct file *filp, char __user *buf, size_t count, l
 static ssize_t procRoamWrite(struct file *file, const char __user *buffer,
 										size_t count, loff_t *data)
 {
+	int ret;
 	WLAN_STATUS rStatus;
 	UINT_32 u4BufLen = 0;
-	UINT_32 u4CopySize = sizeof(g_aucProcBuf);
 
-	kalMemSet(g_aucProcBuf, 0, u4CopySize);
-	if (u4CopySize >= count+1)
-		u4CopySize = count;
-	else
-		u4CopySize -= 1;
-
-	if (copy_from_user(g_aucProcBuf, buffer, u4CopySize)) {
-		DBGLOG(INIT, ERROR, "error of copy from user\n");
-		return -EFAULT;
-	}
-	g_aucProcBuf[u4CopySize] = '\0';
+	ret = procCopyUserInput(buffer, count);
+	if (ret)
+		return ret;
 
 	if (kalStrnCmp(g_aucProcBuf, "force_roam", 10) == 0)
 		rStatus = kalIoctl(g_prGlueInfo_proc, wlanoidSetForceRoam, NULL, 0,
@@ -1263,21 +1256,13 @@ static ssize_t procCountryRead(struct file *filp, char __user *buf, size_t count
 static ssize_t procCountryWrite(struct file *file, const char __user *buffer,
 										size_t count, loff_t *data)
 {
+	int ret;
 	UINT_32 u4BufLen = 0;
 	WLAN_STATUS rStatus;
-	UINT_32 u4CopySize = sizeof(g_aucProcBuf);
 
-	kalMemSet(g_aucProcBuf, 0, u4CopySize);
-	if (u4CopySize >= count+1)
-		u4CopySize = count;
-	else
-		u4CopySize -= 1;
-
-	if (copy_from_user(g_aucProcBuf, buffer, u4CopySize)) {
-		DBGLOG(INIT, ERROR, "error of copy from user\n");
-		return -EFAULT;
-	}
-	g_aucProcBuf[u4CopySize] = '\0';
+	ret = procCopyUserInput(buffer, count);
+	if (ret)
+		return ret;
 
 	rStatus = kalIoctl(g_prGlueInfo_proc, wlanoidSetCountryCode,
 			&g_aucProcBuf[0], 2, FALSE, FALSE, TRUE, &u4BufLen);
@@ -1656,5 +1641,3 @@ static int procTxStatisticsWrite(struct file *file, const char *buffer, unsigned
 
 }				/* end of procTxStatisticsWrite() */
 #endif
-
-
