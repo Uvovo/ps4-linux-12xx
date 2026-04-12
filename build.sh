@@ -1,44 +1,73 @@
 #!/usr/bin/env bash
 
 # PS4-Linux Strawberry Builder
-# Supports two PS4-focused ThinLTO build profiles:
+# Supports two PS4-focused build profiles and two LTO flavors:
 #   server  — headless/services, HZ=250, PREEMPT_VOLUNTARY, performance governor
-#   general — desktop/gaming, HZ=1000, PREEMPT=y, BORE, schedutil/reflex
+#   general — desktop/gaming, HZ=250, PREEMPT=y, BORE, schedutil/reflex
+#   ThinLTO / FullLTO selectable via lto=ThinLTO or lto=FullLTO
 #
 # Usage:
-#   ./build.sh                        Interactive menu
-#   ./build.sh --option N             Non-interactive (1=build, 2=fetch, 3=both)
-#   ./build.sh --option N use=Server  Force profile (Server or General)
+#   ./build.sh
+#   ./build.sh --option N
+#   ./build.sh --option N use=Server
+#   ./build.sh --option N lto=ThinLTO
+#   ./build.sh --option N use=General lto=FullLTO
 #   ./build.sh --option 7             Show/switch build profile
+#   ./build.sh --option 8             Show/switch LTO flavor
 
 set -euo pipefail
 
 OUTPUT_DIR="${PWD}/out"
 FIRMWARE_DIR="${PWD}/extra_firmware"
 BASE_URL="https://gitlab.com/kernel-firmware/linux-firmware/-/raw/main"
-# ik you probably want to crucify me for adding some of these new flags and downgrading to -Os, but this is just the kernel and id prefer it not taking the entire instruction/data cache, (this also goes for server too, more cache the more performant things will be)
-# i also set vectorization to cheap to ensure we still try to get some of its benefits in some code but not use it all the time, cause the avx instructions will be used by apps sometimes, and i dont want register contention ruining our memory latency cause iirc it will spill over to cache or the ram which is very bad
-# omitting the frame pointer is kinda useful to help a lil bit, not sure by how much though. btver2 does do a lot in the way of hinting to the compiler. plt is cool cus we also get more registers freed for things to use
+
+# PS4 Jaguar tuning
 export KCFLAGS="-march=btver2 -mtune=btver2 -Os"
 export KAFLAGS="-march=btver2 -mtune=btver2 -Os"
 export HOSTCFLAGS="-Wno-error=incompatible-pointer-types-discards-qualifiers"
 
 PROFILE="server"
-JOBS=$(nproc)
-MAX_JOBS=$(nproc)
+LTO_FLAVOR="thin"
+JOBS="$(nproc)"
+MAX_JOBS="$(nproc)"
 
-# Parse optional build profile: use=Server or use=General
-if [[ $# -ge 3 && "$3" =~ ^use= ]]; then
-    PROFILE_ARG="${3#use=}"
-    if [[ "${PROFILE_ARG,,}" == "server" ]]; then
-        PROFILE="server"
-    elif [[ "${PROFILE_ARG,,}" == "general" ]]; then
-        PROFILE="general"
+lto_label() {
+    if [[ "$LTO_FLAVOR" == "full" ]]; then
+        echo "FullLTO"
     else
-        echo "Unknown build profile: ${PROFILE_ARG}. Valid: Server, General"
-        exit 1
+        echo "ThinLTO"
     fi
-fi
+}
+
+# Parse optional selectors in any position:
+#   use=Server/use=General
+#   lto=ThinLTO/lto=FullLTO
+for arg in "$@"; do
+    case "$arg" in
+        use=*)
+            PROFILE_ARG="${arg#use=}"
+            case "${PROFILE_ARG,,}" in
+                server) PROFILE="server" ;;
+                general) PROFILE="general" ;;
+                *)
+                    echo "Unknown build profile: ${PROFILE_ARG}. Valid: Server, General"
+                    exit 1
+                    ;;
+            esac
+            ;;
+        lto=*)
+            LTO_ARG="${arg#lto=}"
+            case "${LTO_ARG,,}" in
+                thinlto|thin) LTO_FLAVOR="thin" ;;
+                fulllto|full) LTO_FLAVOR="full" ;;
+                *)
+                    echo "Unknown LTO flavor: ${LTO_ARG}. Valid: ThinLTO, FullLTO"
+                    exit 1
+                    ;;
+            esac
+            ;;
+    esac
+done
 
 if [[ $# -ge 2 && "$1" == "--option" ]]; then
     CHOICE="$2"
@@ -52,10 +81,19 @@ if [[ $# -ge 2 && "$1" == "--option" ]]; then
             ;;
         7)
             echo "Current build profile: ${PROFILE}"
-            read -p "Switch profile? (y/n): " SWITCH
+            read -r -p "Switch profile? (y/n): " SWITCH
             if [[ "$SWITCH" =~ ^[Yy]$ ]]; then
                 [[ "$PROFILE" == "server" ]] && PROFILE="general" || PROFILE="server"
                 echo "Profile switched to: ${PROFILE}"
+            fi
+            exit 0
+            ;;
+        8)
+            echo "Current LTO flavor: $(lto_label)"
+            read -r -p "Switch LTO flavor? (y/n): " SWITCH
+            if [[ "$SWITCH" =~ ^[Yy]$ ]]; then
+                [[ "$LTO_FLAVOR" == "thin" ]] && LTO_FLAVOR="full" || LTO_FLAVOR="thin"
+                echo "LTO flavor switched to: $(lto_label)"
             fi
             exit 0
             ;;
@@ -79,34 +117,37 @@ if [[ "$SKIP_MENU" == "0" ]]; then
         echo -e "\e[1;35m║\e[0m \e[1;32m2)\e[0m Fetch firmware blobs                          \e[1;35m║\e[0m"
         echo -e "\e[1;35m║\e[0m \e[1;32m3)\e[0m Both (fetch + build)                          \e[1;35m║\e[0m"
         echo -e "\e[1;35m║\e[0m \e[1;32m4)\e[0m Threads to use: \e[1;33m$(printf "%-29s" "${JOBS} / ${MAX_JOBS}")\e[0m \e[1;35m║\e[0m"
-        echo -e "\e[1;35m║\e[0m \e[1;32m6)\e[0m Build profile: \e[1;33m${PROFILE}\e[0m$(printf "%-22s" "")\e[1;35m║\e[0m"
         echo -e "\e[1;35m║\e[0m \e[1;31m5)\e[0m Quit                                          \e[1;35m║\e[0m"
+        echo -e "\e[1;35m║\e[0m \e[1;32m6)\e[0m Build profile: \e[1;33m${PROFILE}\e[0m$(printf "%-22s" "")\e[1;35m║\e[0m"
         echo -e "\e[1;35m║\e[0m \e[1;36m7)\e[0m Show/switch build profile                      \e[1;35m║\e[0m"
+        echo -e "\e[1;35m║\e[0m \e[1;32m8)\e[0m Build LTO: \e[1;33m$(printf "%-31s" "$(lto_label)")\e[0m \e[1;35m║\e[0m"
         echo -e "\e[1;35m╚══════════════════════════════════════════════════╝\e[0m"
         echo ""
-        read -p "Select option [1-7]: " CHOICE
+        read -r -p "Select option [1-8]: " CHOICE
 
         case "$CHOICE" in
             1) DO_BUILD=1; DO_FETCH=0; break ;;
             2) DO_BUILD=0; DO_FETCH=1; break ;;
             3) DO_BUILD=1; DO_FETCH=1; break ;;
             4)
-                read -p "Enter number of threads (1-${MAX_JOBS}): " NEW_JOBS
-                if [[ "$NEW_JOBS" =~ ^[0-9]+$ ]] && \
-                   [ "$NEW_JOBS" -ge 1 ] && [ "$NEW_JOBS" -le "$MAX_JOBS" ]; then
-                    JOBS=$NEW_JOBS
+                read -r -p "Enter number of threads (1-${MAX_JOBS}): " NEW_JOBS
+                if [[ "$NEW_JOBS" =~ ^[0-9]+$ ]] && [[ "$NEW_JOBS" -ge 1 ]] && [[ "$NEW_JOBS" -le "$MAX_JOBS" ]]; then
+                    JOBS="$NEW_JOBS"
                 else
                     echo -e "\e[1;31m[!] Invalid input.\e[0m Press enter to continue."
                     read -r
                 fi
                 ;;
-            5) echo "Exiting."; exit 0 ;;
+            5)
+                echo "Exiting."
+                exit 0
+                ;;
             6)
                 echo ""
                 echo "Select build profile:"
                 echo "  1) Server  (max throughput, headless)"
                 echo "  2) General (gaming/desktop latency)"
-                read -p "Profile [1-2]: " PROFILE_CHOICE
+                read -r -p "Profile [1-2]: " PROFILE_CHOICE
                 if [[ "$PROFILE_CHOICE" == "1" ]]; then
                     PROFILE="server"
                 elif [[ "$PROFILE_CHOICE" == "2" ]]; then
@@ -119,14 +160,27 @@ if [[ "$SKIP_MENU" == "0" ]]; then
             7)
                 echo ""
                 echo "Current build profile: ${PROFILE}"
-                read -p "Switch profile? (y/n): " SWITCH
+                read -r -p "Switch profile? (y/n): " SWITCH
                 if [[ "$SWITCH" =~ ^[Yy]$ ]]; then
                     [[ "$PROFILE" == "server" ]] && PROFILE="general" || PROFILE="server"
                     echo "Profile switched to: ${PROFILE}"
                     sleep 1
                 fi
                 ;;
-            *) echo -e "\e[1;31m[!] Invalid option.\e[0m"; sleep 1 ;;
+            8)
+                echo ""
+                echo "Current LTO flavor: $(lto_label)"
+                read -r -p "Switch LTO flavor? (y/n): " SWITCH
+                if [[ "$SWITCH" =~ ^[Yy]$ ]]; then
+                    [[ "$LTO_FLAVOR" == "thin" ]] && LTO_FLAVOR="full" || LTO_FLAVOR="thin"
+                    echo "LTO flavor switched to: $(lto_label)"
+                    sleep 1
+                fi
+                ;;
+            *)
+                echo -e "\e[1;31m[!] Invalid option.\e[0m"
+                sleep 1
+                ;;
         esac
     done
 fi
@@ -139,7 +193,7 @@ MAKE_OPTS=(
 )
 
 if [[ ! -f Makefile ]] || ! grep -q "KERNELRELEASE" Makefile 2>/dev/null; then
-    echo -e "\e[1;31mERROR:\e[0m Run this from the kernel source root (ps4-linux-12xx/)." >&2
+    echo -e "\e[1;31mERROR:\e[0m Run this from the kernel source root." >&2
     exit 1
 fi
 
@@ -154,16 +208,13 @@ if [[ ! -f .config ]]; then
 fi
 
 if [[ "$DO_FETCH" == "1" ]]; then
-    CONFIG_LINE=$(grep -E '^CONFIG_EXTRA_FIRMWARE=' .config 2>/dev/null || true)
+    CONFIG_LINE="$(grep -E '^CONFIG_EXTRA_FIRMWARE=' .config 2>/dev/null || true)"
     if [[ -z "${CONFIG_LINE}" ]]; then
         echo -e "\e[1;31mERROR:\e[0m CONFIG_EXTRA_FIRMWARE not found in .config" >&2
         exit 1
     fi
 
-    BLOBS=$(echo "${CONFIG_LINE}" \
-        | sed 's/CONFIG_EXTRA_FIRMWARE="\(.*\)"/\1/' \
-        | tr ' ' '\n' \
-        | grep -v '^$')
+    BLOBS="$(echo "${CONFIG_LINE}" | sed 's/CONFIG_EXTRA_FIRMWARE="\(.*\)"/\1/' | tr ' ' '\n' | grep -v '^$' || true)"
 
     if [[ -z "${BLOBS}" ]]; then
         echo "CONFIG_EXTRA_FIRMWARE is empty -- nothing to fetch."
@@ -181,8 +232,7 @@ if [[ "$DO_FETCH" == "1" ]]; then
             fi
             mkdir -p "$(dirname "${dest}")"
             echo -e "  \e[1;34m[↓]\e[0m Fetching: ${blob}"
-            if curl -fsSL --retry 3 --retry-delay 2 \
-                    "${BASE_URL}/${blob}" -o "${dest}"; then
+            if curl -fsSL --retry 3 --retry-delay 2 "${BASE_URL}/${blob}" -o "${dest}"; then
                 echo -e "  \e[1;32m[✓]\e[0m ${blob}"
             else
                 echo -e "  \e[1;31m[✗]\e[0m FAILED: ${blob}" >&2
@@ -203,25 +253,25 @@ if [[ "$DO_FETCH" == "1" ]]; then
 fi
 
 if [[ "$DO_BUILD" == "1" ]]; then
+    echo -e "\e[1;34m[*]\e[0m Applying invariant config..."
 
-    echo -e "\e[1;34m[*]\e[0m Applying invariant config (both profiles)..."
-
-    # ── Build system ─────────────────────────────────────────────────────
-    # ThinLTO only: on PS4, FullLTO's extra link time does not buy enough
-    # runtime speed to justify the heavier build cost.
-    scripts/config --enable  CONFIG_LTO_CLANG_THIN
-    scripts/config --disable CONFIG_LTO_CLANG_FULL
+    # Build system / LTO
+    if [[ "$LTO_FLAVOR" == "full" ]]; then
+        echo -e "\e[1;34m[*]\e[0m Enabling FullLTO..."
+        scripts/config --disable CONFIG_LTO_CLANG_THIN
+        scripts/config --enable  CONFIG_LTO_CLANG_FULL
+    else
+        echo -e "\e[1;34m[*]\e[0m Enabling ThinLTO..."
+        scripts/config --enable  CONFIG_LTO_CLANG_THIN
+        scripts/config --disable CONFIG_LTO_CLANG_FULL
+    fi
     scripts/config --disable CONFIG_LOCALVERSION_AUTO
 
-    # ── Kernel compression ───────────────────────────────────────────────
-    # ZSTD decompresses ~3x faster than XZ at boot, negligible size diff.
+    # Kernel compression
     scripts/config --disable CONFIG_KERNEL_XZ
     scripts/config --enable  CONFIG_KERNEL_ZSTD
 
-    # ── NUMA removal ─────────────────────────────────────────────────────
-    # PS4 is single-node UMA. NUMA=y adds node-aware indirection to every
-    # alloc_pages call, zone accounting, and scheduler wake path.
-    # Unconditional overhead on this hardware -- remove it entirely.
+    # NUMA removal
     scripts/config --disable CONFIG_NUMA
     scripts/config --disable CONFIG_AMD_NUMA
     scripts/config --disable CONFIG_X86_64_ACPI_NUMA
@@ -229,8 +279,7 @@ if [[ "$DO_BUILD" == "1" ]]; then
     scripts/config --disable CONFIG_NUMA_MEMBLKS
     scripts/config --disable CONFIG_NUMA_BALANCING
 
-    # ── Bare-metal PS4 target ────────────────────────────────────────────
-    # Both profiles target a native PS4, so trim guest/hypervisor overhead.
+    # Bare-metal PS4 target
     scripts/config --disable CONFIG_HYPERVISOR_GUEST
     scripts/config --disable CONFIG_PARAVIRT
     scripts/config --disable CONFIG_PARAVIRT_XXL
@@ -238,22 +287,16 @@ if [[ "$DO_BUILD" == "1" ]]; then
     scripts/config --disable CONFIG_KVM_AMD
     scripts/config --disable CONFIG_KVM_INTEL
 
-    # ── Memory management ────────────────────────────────────────────────
-    # MGLRU: better page reclaim under memory pressure. Mixed anon+file
-    # workloads (games loading assets while running) benefit most.
+    # PS4 firmware
+    scripts/config --enable  CONFIG_PS4_DMI_SPOOF
+
+    # Memory management
     scripts/config --enable  CONFIG_LRU_GEN
     scripts/config --enable  CONFIG_LRU_GEN_ENABLED
     scripts/config --enable  CONFIG_LRU_GEN_STATS
-
-    # Enable THP support globally; each profile chooses its default mode.
     scripts/config --enable  CONFIG_TRANSPARENT_HUGEPAGE
-
-    # SLUB per-cpu partial lists: reduces slab lock contention under
-    # concurrent allocation workloads (games, servers, containers).
     scripts/config --enable  CONFIG_SLUB_CPU_PARTIAL
 
-    # ZSWAP/ZRAM: zstd gives better compression ratio than LZO/LZ4
-    # at comparable throughput on Jaguar -- more effective usable RAM.
     scripts/config --disable CONFIG_ZSWAP_COMPRESSOR_DEFAULT_LZO
     scripts/config --enable  CONFIG_ZSWAP_COMPRESSOR_DEFAULT_ZSTD
     scripts/config --set-str CONFIG_ZSWAP_COMPRESSOR_DEFAULT "zstd"
@@ -263,17 +306,10 @@ if [[ "$DO_BUILD" == "1" ]]; then
     scripts/config --enable  CONFIG_ZSWAP
     scripts/config --enable  CONFIG_ZRAM
 
-    # ── Async I/O ────────────────────────────────────────────────────────
-    # io_uring: was disabled. Used by modern server daemons and game
-    # shader compilation pipelines (dxvk/vkd3d async workers).
+    # Async I/O
     scripts/config --enable  CONFIG_IO_URING
 
-    # ── Network ──────────────────────────────────────────────────────────
-    # BBR: model-based congestion control. Better throughput/latency than
-    # CUBIC under concurrent connections and non-ideal links.
-    # FQ: per-flow pacing qdisc. BBR computes a target sending rate; FQ
-    # enforces it at the transmit path. Without FQ, BBR's pacing is
-    # calculated but never applied. Required pairing.
+    # Network
     scripts/config --enable  CONFIG_TCP_CONG_BBR
     scripts/config --set-str CONFIG_DEFAULT_TCP_CONG "bbr"
     scripts/config --enable  CONFIG_NET_SCH_DEFAULT
@@ -281,48 +317,34 @@ if [[ "$DO_BUILD" == "1" ]]; then
     scripts/config --enable  CONFIG_NET_SCH_FQ_CODEL
     scripts/config --enable  CONFIG_NET_SCH_CAKE
 
-    # ── Crypto acceleration ──────────────────────────────────────────────
-    # Jaguar has AES-NI + PCLMULQDQ. Hardware paths for AES-GCM used by
-    # TLS 1.3, WireGuard, dm-crypt. No software fallback needed.
+    # Crypto acceleration
     scripts/config --enable  CONFIG_CRYPTO_AES_NI_INTEL
     scripts/config --enable  CONFIG_CRYPTO_GHASH_CLMUL_NI_INTEL
     scripts/config --enable  CONFIG_CRYPTO_POLYVAL_CLMUL_NI
     scripts/config --enable  CONFIG_CRYPTO_LIB_SHA256
 
-    # ── Futex ────────────────────────────────────────────────────────────
-    # Private hash + MPOL: lower latency mutex/condvar operations.
-    # Affects every mutex in every application -- game engines, Wine,
-    # system daemons.
+    # Futex
     scripts/config --enable  CONFIG_FUTEX
     scripts/config --enable  CONFIG_FUTEX_PI
     scripts/config --enable  CONFIG_FUTEX_PRIVATE_HASH
     scripts/config --enable  CONFIG_FUTEX_MPOL
 
-    # ── NTSYNC ───────────────────────────────────────────────────────────
-    # In-kernel NT synchronization primitives for Wine/Proton.
-    # Replaces esync/fsync fd-based workarounds entirely.
-    # Significantly lower latency NT mutex/event/semaphore for games.
+    # NTSYNC
     scripts/config --enable  CONFIG_NTSYNC
 
-    # ── Scheduler ────────────────────────────────────────────────────────
+    # Scheduler
     scripts/config --enable  CONFIG_SCHED_CLASS_EXT
     scripts/config --enable  CONFIG_SCHED_EXT
-    # Autogroup: kernel groups tasks by session automatically.
-    # Background compilers, package managers get deprioritized as a
-    # group vs the active foreground application.
     scripts/config --enable  CONFIG_SCHED_AUTOGROUP
 
-    # ── BPF ──────────────────────────────────────────────────────────────
-    # sched_ext depends on BPF + BTF in this kernel tree.
+    # BPF
     scripts/config --enable  CONFIG_BPF_SYSCALL
     scripts/config --enable  CONFIG_BPF_JIT
     scripts/config --enable  CONFIG_BPF_JIT_ALWAYS_ON
     scripts/config --enable  CONFIG_BPF_JIT_DEFAULT_ON
     scripts/config --disable CONFIG_BPF_UNPRIV_DEFAULT_OFF
 
-    # ── BTF / debug metadata ─────────────────────────────────────────────
-    # Keep the minimum compile-time type metadata needed by sched_ext.
-    # This is not the same as turning on runtime debug facilities.
+    # BTF / debug metadata
     scripts/config --enable  CONFIG_DEBUG_INFO
     scripts/config --enable  CONFIG_DEBUG_INFO_DWARF4
     scripts/config --disable CONFIG_DEBUG_INFO_DWARF5
@@ -331,8 +353,7 @@ if [[ "$DO_BUILD" == "1" ]]; then
     scripts/config --enable  CONFIG_DEBUG_INFO_BTF
     scripts/config --enable  CONFIG_DEBUG_INFO_BTF_MODULES
 
-    # ── Runtime debug / tracing ──────────────────────────────────────────
-    # These are development-only costs for this tree. Keep runtime lean.
+    # Runtime debug / tracing
     scripts/config --disable CONFIG_DEBUG_KERNEL
     scripts/config --disable CONFIG_PROVE_LOCKING
     scripts/config --disable CONFIG_LOCKDEP
@@ -341,8 +362,7 @@ if [[ "$DO_BUILD" == "1" ]]; then
     scripts/config --disable CONFIG_SCHED_DEBUG
     scripts/config --disable CONFIG_DEBUG_FS
 
-    # ── Mitigation / hardening trims ─────────────────────────────────────
-    # This target is a fixed console box; prefer lower overhead.
+    # Mitigation / hardening trims
     scripts/config --disable CONFIG_CPU_MITIGATIONS
     scripts/config --disable CONFIG_STACKPROTECTOR
     scripts/config --disable CONFIG_STACKPROTECTOR_STRONG
@@ -359,8 +379,7 @@ if [[ "$DO_BUILD" == "1" ]]; then
     scripts/config --disable CONFIG_IOMMU_DEFAULT_DMA_STRICT
     scripts/config --enable  CONFIG_IOMMU_DEFAULT_DMA_LAZY
 
-    # ── I/O schedulers ───────────────────────────────────────────────────
-    # Build all in; profile selects the default.
+    # I/O schedulers
     scripts/config --enable  CONFIG_MQ_IOSCHED_DEADLINE
     scripts/config --enable  CONFIG_MQ_IOSCHED_KYBER
     scripts/config --enable  CONFIG_IOSCHED_BFQ
@@ -368,8 +387,7 @@ if [[ "$DO_BUILD" == "1" ]]; then
     scripts/config --enable  CONFIG_BLK_WBT
     scripts/config --enable  CONFIG_BLK_WBT_MQ
 
-    # ── Strip debug overhead ─────────────────────────────────────────────
-    # All of these log on hot paths and have no production value.
+    # Strip debug overhead
     scripts/config --disable CONFIG_DMADEVICES_DEBUG
     scripts/config --disable CONFIG_DMADEVICES_VDEBUG
     scripts/config --disable CONFIG_IOMMU_DEBUG
@@ -379,62 +397,44 @@ if [[ "$DO_BUILD" == "1" ]]; then
     scripts/config --disable CONFIG_DM_DEBUG
     scripts/config --disable CONFIG_BLK_DEBUG_FS
 
-    # ── Profile-specific ─────────────────────────────────────────────────
     if [[ "$PROFILE" == "server" ]]; then
         echo -e "\e[1;34m[*]\e[0m Applying server profile..."
 
-        # BORE off: burst-aware interactive bias is irrelevant for
-        # server batch/throughput workloads.
         scripts/config --disable CONFIG_SCHED_BORE
         scripts/config --disable CONFIG_SCHED_AUTOGROUP
         scripts/config --disable CONFIG_CPU_FREQ_GOV_REFLEX
 
-        # Performance governor: clocks at max, zero scaling latency.
         scripts/config --disable CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL
         scripts/config --disable CONFIG_CPU_FREQ_GOV_SCHEDUTIL
         scripts/config --enable  CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE
         scripts/config --enable  CONFIG_CPU_FREQ_GOV_PERFORMANCE
 
-        # HZ=250: 750 fewer timer interrupts/sec/CPU vs HZ=1000.
-        # ~1-2% CPU saving on compute-bound workloads.
         scripts/config --disable CONFIG_HZ_1000
         scripts/config --disable CONFIG_HZ_300
         scripts/config --disable CONFIG_HZ_100
         scripts/config --enable  CONFIG_HZ_250
         scripts/config --set-val CONFIG_HZ 250
 
-        # Tickless idle avoids wasted timer interrupts on parked CPUs
-        # without the syscall/interrupt tradeoffs of full dynticks.
         scripts/config --enable  CONFIG_NO_HZ_IDLE
         scripts/config --disable CONFIG_NO_HZ_FULL
 
-        # PREEMPT_VOLUNTARY: better throughput than full preemption.
-        # Yields only at explicit schedule points.
         scripts/config --disable CONFIG_PREEMPT
-        scripts/config --disable CONFIG_PREEMPT_NONE
         scripts/config --enable  CONFIG_PREEMPT_VOLUNTARY
+        scripts/config --disable CONFIG_PREEMPT_NONE
 
-        # Keep memory/cpu controllers for services and light containers.
         scripts/config --enable  CONFIG_MEMCG
         scripts/config --enable  CONFIG_CGROUP_SCHED
         scripts/config --enable  CONFIG_FAIR_GROUP_SCHED
         scripts/config --disable CONFIG_RT_GROUP_SCHED
-
-        # CFS bandwidth: CPU quota enforcement for containers/cgroups.
         scripts/config --enable  CONFIG_CFS_BANDWIDTH
 
-        # PSI: pressure stall info for systemd-oomd/cgroup2 monitoring.
-        # Near-zero overhead when not actively read.
         scripts/config --enable  CONFIG_PSI
         scripts/config --enable  CONFIG_PSI_DEFAULT_DISABLED
 
-        # THP madvise: keeps the TLB win for opted-in workloads without
-        # the memory bloat and compaction spikes of always-on THP.
         scripts/config --enable  CONFIG_TRANSPARENT_HUGEPAGE
         scripts/config --disable CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS
         scripts/config --enable  CONFIG_TRANSPARENT_HUGEPAGE_MADVISE
 
-        # Container / firewall stack belongs on the server profile.
         scripts/config --enable  CONFIG_NETFILTER
         scripts/config --enable  CONFIG_NETFILTER_ADVANCED
         scripts/config --enable  CONFIG_NETFILTER_XTABLES
@@ -449,71 +449,49 @@ if [[ "$DO_BUILD" == "1" ]]; then
         scripts/config --enable  CONFIG_VETH
         scripts/config --enable  CONFIG_OVERLAY_FS
 
-        # mq-deadline: predictable latency under queue depth, better for
-        # server HDD/SSD throughput than BFQ.
         scripts/config --set-str CONFIG_DEFAULT_IOSCHED "mq-deadline"
 
-        # FQ is the cleanest default partner for BBR pacing on servers.
         scripts/config --enable  CONFIG_DEFAULT_FQ
         scripts/config --disable CONFIG_DEFAULT_FQ_CODEL
         scripts/config --disable CONFIG_DEFAULT_FQ_PIE
         scripts/config --disable CONFIG_DEFAULT_SFQ
         scripts/config --disable CONFIG_DEFAULT_PFIFO_FAST
         scripts/config --set-str CONFIG_DEFAULT_NET_SCH "fq"
-
     else
         echo -e "\e[1;34m[*]\e[0m Applying general/gaming profile..."
 
-        # ── Mitigations ──────────────────────────────────────────────────
-        # Dedicated desktop/gaming box: strip x86 mitigation overhead for
-        # the lowest syscall and context-switch latency on 6.18 LTS.
-        # likelyhood of someone exploiting these anyways is extremellllyyyy low on a home use (not server, but maybe just local stuff) system anyways
         scripts/config --disable CONFIG_CPU_MITIGATIONS
 
-        # ── Cgroup / memcg ───────────────────────────────────────────────
-        # MEMCG hooks into every alloc_pages. No containers on this box.
         scripts/config --disable CONFIG_MEMCG
         scripts/config --disable CONFIG_CGROUP_SCHED
         scripts/config --disable CONFIG_FAIR_GROUP_SCHED
         scripts/config --enable  CONFIG_RT_GROUP_SCHED
         scripts/config --disable CONFIG_CFS_BANDWIDTH
 
-        # ── BORE ─────────────────────────────────────────────────────────
         scripts/config --enable  CONFIG_SCHED_BORE
-        # At HZ=250, BORE's tick-quantized base slice resolves to 4 ms.
-        # Make that floor explicit so the gaming profile stays stable.
         scripts/config --set-val CONFIG_MIN_BASE_SLICE_NS 4000000
 
-        # ── CPU frequency ─────────────────────────────────────────────────
         scripts/config --enable  CONFIG_CPU_FREQ_GOV_REFLEX
         scripts/config --enable  CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL
         scripts/config --enable  CONFIG_CPU_FREQ_GOV_SCHEDUTIL
         scripts/config --disable CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE
 
-        # ── Timer / preemption ────────────────────────────────────────────
-        # HZ=1000 + NO_HZ_FULL: 1ms resolution + tickless on game cores.
-        # why tf hz=1000, just makes the cpu work more when it doesnt have to
-        scripts/config --enable CONFIG_HZ_250
+        scripts/config --enable  CONFIG_HZ_250
         scripts/config --disable CONFIG_HZ_300
         scripts/config --disable CONFIG_HZ_100
-        scripts/config --disable  CONFIG_HZ_1000
+        scripts/config --disable CONFIG_HZ_1000
         scripts/config --set-val CONFIG_HZ 250
         scripts/config --enable  CONFIG_NO_HZ_IDLE
         scripts/config --enable  CONFIG_NO_HZ_FULL
 
-        # Full preemption: kernel preemptible anywhere safe.
         scripts/config --enable  CONFIG_PREEMPT
-        scripts/config --enable  CONFIG_PREEMPT_VOLUNTARY
+        scripts/config --disable CONFIG_PREEMPT_VOLUNTARY
         scripts/config --disable CONFIG_PREEMPT_NONE
 
-        # Always-on THP fits desktop/gaming better than server duty:
-        # shader caches, Wine/Proton, and larger userspace heaps benefit.
-        # to contradict, we dont need games/apps using extra ram when we dont need them to. This could go more useful to the fs cache which greatly improves responsiveness
         scripts/config --enable  CONFIG_TRANSPARENT_HUGEPAGE
         scripts/config --disable CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS
         scripts/config --enable  CONFIG_TRANSPARENT_HUGEPAGE_MADVISE
 
-        # Keep Docker / firewall plumbing out of the general desktop build.
         scripts/config --disable CONFIG_OVERLAY_FS
         scripts/config --disable CONFIG_VETH
         scripts/config --disable CONFIG_BRIDGE_NETFILTER
@@ -528,19 +506,15 @@ if [[ "$DO_BUILD" == "1" ]]; then
         scripts/config --disable CONFIG_NETFILTER_ADVANCED
         scripts/config --disable CONFIG_NETFILTER
 
-        # ── I/O ───────────────────────────────────────────────────────────
-        # BFQ: isolates game I/O from background noise.
         scripts/config --disable CONFIG_PSI
         scripts/config --set-str CONFIG_DEFAULT_IOSCHED "bfq"
 
-        # fq_codel is the better desktop default for mixed latency traffic.
         scripts/config --enable  CONFIG_DEFAULT_FQ_CODEL
         scripts/config --disable CONFIG_DEFAULT_FQ
         scripts/config --disable CONFIG_DEFAULT_FQ_PIE
         scripts/config --disable CONFIG_DEFAULT_SFQ
         scripts/config --disable CONFIG_DEFAULT_PFIFO_FAST
         scripts/config --set-str CONFIG_DEFAULT_NET_SCH "fq_codel"
-
     fi
 
     if [[ -d "${FIRMWARE_DIR}" ]] && [[ -n "$(ls -A "${FIRMWARE_DIR}" 2>/dev/null)" ]]; then
@@ -556,7 +530,7 @@ if [[ "$DO_BUILD" == "1" ]]; then
     echo -e "\e[1;34m[*]\e[0m Running prepare..."
     make "${MAKE_OPTS[@]}" prepare
 
-    echo -e "\e[1;34m[*]\e[0m Building bzImage [profile: ${PROFILE}] with ${JOBS} jobs..."
+    echo -e "\e[1;34m[*]\e[0m Building bzImage [profile: ${PROFILE}, lto: $(lto_label)] with ${JOBS} jobs..."
     time make "${MAKE_OPTS[@]}" bzImage
 
     BZIMAGE="arch/x86/boot/bzImage"
@@ -569,12 +543,12 @@ if [[ "$DO_BUILD" == "1" ]]; then
     cp "${BZIMAGE}" "${OUTPUT_DIR}/bzImage"
     cp .config "${OUTPUT_DIR}/.config"
 
-    KVER=$(cat include/config/kernel.release 2>/dev/null || echo "unknown")
-    LTO_FLAVOR="ThinLTO"
+    KVER="$(cat include/config/kernel.release 2>/dev/null || echo "unknown")"
+    LTO_LABEL="$(lto_label)"
 
     PROFILE_LABEL="Server"
     if [[ "$PROFILE" == "general" ]]; then
-        PROFILE_LABEL="Desktop"
+        PROFILE_LABEL="General"
     fi
 
     KVER_BASE="${KVER%%-*}"
@@ -583,17 +557,17 @@ if [[ "$DO_BUILD" == "1" ]]; then
         RELEASE_TRACK="LTS"
     fi
 
-    ARTIFACT_BASENAME="Strawberry-${LTO_FLAVOR}-${PROFILE_LABEL}-${RELEASE_TRACK}-${KVER}"
+    ARTIFACT_BASENAME="Strawberry-${LTO_LABEL}-${PROFILE_LABEL}-${RELEASE_TRACK}-${KVER}"
     printf '%s\n' "${ARTIFACT_BASENAME}" > "${OUTPUT_DIR}/artifact_name.txt"
+
     echo ""
     echo -e "\e[1;32m╔══════════════════════════════════════════════════╗\e[0m"
-    echo -e "\e[1;32m║\e[0m  Build complete! [${PROFILE}]$(printf "%-26s" "")\e[1;32m║\e[0m"
+    echo -e "\e[1;32m║\e[0m  Build complete! [${PROFILE} / ${LTO_LABEL}]$(printf "%-13s" "")\e[1;32m║\e[0m"
     echo -e "\e[1;32m║\e[0m  Kernel : $(printf "%-39s" "${KVER}")\e[1;32m║\e[0m"
     echo -e "\e[1;32m║\e[0m  bzImage: $(printf "%-39s" "${OUTPUT_DIR}/bzImage")\e[1;32m║\e[0m"
     echo -e "\e[1;32m╚══════════════════════════════════════════════════╝\e[0m"
     echo ""
-    # removing extra cpu cores hurts performance on literally everything, kernel is smart enough to schedule threads itself. Maybe in a worst case scenario it will have issues but like why not just disable one core instead of 2? eh whatever
-    # pti and spectre v2 toggle aint needed btw, mitigations were disabled in the kernel itself for gaming/general use profile and will be determined at bootup
+
     if [[ "$PROFILE" == "general" ]]; then
         echo "Kernel cmdline (add to your kexec invocation):"
         echo "  isolcpus=2-7 nohz_full=2-7 rcu_nocbs=2-7 irqaffinity=0-1 threadirqs"
@@ -609,6 +583,7 @@ if [[ "$DO_BUILD" == "1" ]]; then
         echo "  echo 2      > /sys/class/drm/card0/device/pp_dpm_sclk"
         echo ""
     fi
+
     echo "Deploy to PS4:"
     echo "  scp ${OUTPUT_DIR}/bzImage root@<ps4-ip>:/boot/bzImage"
 fi
