@@ -299,6 +299,7 @@ if [[ "$DO_BUILD" == "1" ]]; then
     scripts/config --enable  CONFIG_LRU_GEN_STATS
     scripts/config --enable  CONFIG_TRANSPARENT_HUGEPAGE
     scripts/config --enable  CONFIG_SLUB_CPU_PARTIAL
+    scripts/config --enable  CONFIG_CGROUP_DMEM
 
     scripts/config --disable CONFIG_ZSWAP_COMPRESSOR_DEFAULT_LZO
     scripts/config --enable  CONFIG_ZSWAP_COMPRESSOR_DEFAULT_ZSTD
@@ -427,6 +428,7 @@ if [[ "$DO_BUILD" == "1" ]]; then
 
         scripts/config --enable  CONFIG_MEMCG
         scripts/config --enable  CONFIG_CGROUP_SCHED
+        scripts/config --enable  CONFIG_CGROUP_DMEM
         scripts/config --enable  CONFIG_FAIR_GROUP_SCHED
         scripts/config --disable CONFIG_RT_GROUP_SCHED
         scripts/config --enable  CONFIG_CFS_BANDWIDTH
@@ -472,7 +474,7 @@ if [[ "$DO_BUILD" == "1" ]]; then
         scripts/config --disable CONFIG_CFS_BANDWIDTH
 
         scripts/config --enable  CONFIG_SCHED_BORE
-        scripts/config --set-val CONFIG_MIN_BASE_SLICE_NS 4000000
+        scripts/config --set-val CONFIG_MIN_BASE_SLICE_NS 2000000
 
         scripts/config --enable  CONFIG_CPU_FREQ_GOV_REFLEX
         scripts/config --enable  CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL
@@ -486,6 +488,8 @@ if [[ "$DO_BUILD" == "1" ]]; then
         scripts/config --set-val CONFIG_HZ 250
         scripts/config --enable  CONFIG_NO_HZ_IDLE
         scripts/config --enable  CONFIG_NO_HZ_FULL
+        scripts/config --enable  CONFIG_RCU_NOCB_CPU
+        scripts/config --enable  CONFIG_RCU_NOCB_CPU_DEFAULT_ALL
 
         scripts/config --enable  CONFIG_PREEMPT
         scripts/config --disable CONFIG_PREEMPT_VOLUNTARY
