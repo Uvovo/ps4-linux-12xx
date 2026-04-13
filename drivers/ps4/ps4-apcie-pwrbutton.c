@@ -1,5 +1,6 @@
 #include <linux/input.h>
 #include "aeolia.h"
+#include "baikal.h"
 
 /* Prototype declarations */
 void icc_pwrbutton_trigger(struct apcie_dev *sc, int state);
@@ -20,6 +21,7 @@ int icc_pwrbutton_init(struct apcie_dev *sc)
 	int ret = 0;
 	u16 button;
 	struct input_dev *dev;
+	bool use_bpcie = ps4_sb_uses_bpcie(sc->pdev->device);
 
 	dev = input_allocate_device();
 	if (!dev) {
@@ -50,7 +52,9 @@ int icc_pwrbutton_init(struct apcie_dev *sc)
 
 	// enable power button notifications
 	button = 0x100;
-	ret = apcie_icc_cmd(8, 1, &button, sizeof(button), NULL, 0);
+	ret = use_bpcie ?
+		bpcie_icc_cmd(8, 1, &button, sizeof(button), NULL, 0) :
+		apcie_icc_cmd(8, 1, &button, sizeof(button), NULL, 0);
 	if (ret < 0) {
 		sc_info("%s: Failed to enable power notifications (%d)\n",
 			__func__, ret);
@@ -58,7 +62,9 @@ int icc_pwrbutton_init(struct apcie_dev *sc)
 
 	// enable reset button notifications (?)
 	button = 0x102;
-	ret = apcie_icc_cmd(8, 1, &button, sizeof(button), NULL, 0);
+	ret = use_bpcie ?
+		bpcie_icc_cmd(8, 1, &button, sizeof(button), NULL, 0) :
+		apcie_icc_cmd(8, 1, &button, sizeof(button), NULL, 0);
 	if (ret < 0) {
 		sc_info("%s: Failed to enable reset notifications (%d)\n",
 		        __func__, ret);
