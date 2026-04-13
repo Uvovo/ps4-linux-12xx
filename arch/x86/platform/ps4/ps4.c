@@ -30,6 +30,7 @@
 
 static bool is_ps4;
 bool apcie_initialized;
+extern bool bpcie_initialized;
 
 /*
  * The RTC is part of the Aeolia PCI device and will be implemented there as
@@ -52,7 +53,7 @@ int apcie_status(void)
 {
 	if (!is_ps4)
 		return -ENODEV;
-	return apcie_initialized;
+	return apcie_initialized || bpcie_initialized;
 }
 EXPORT_SYMBOL_GPL(apcie_status);
 

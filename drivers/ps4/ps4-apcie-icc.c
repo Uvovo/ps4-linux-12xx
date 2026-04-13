@@ -10,6 +10,7 @@
 #include <linux/uaccess.h>
 #include <asm/ps4.h>
 #include "aeolia.h"
+#include "baikal.h"
 
 /* There should normally be only one Aeolia device in a system. This allows
  * other kernel code in unrelated subsystems to issue icc requests without
@@ -43,19 +44,6 @@ void do_icc_init(void);
 void icc_reboot(void);
 int apcie_icc_init(struct apcie_dev *sc);
 void apcie_icc_remove(struct apcie_dev *sc);
-
-#define ICC_MAJOR	'I'
-
- struct icc_cmd {
- 	u8 major;
- 	u16 minor;
- 	void __user *data;
- 	u16 length;
- 	void __user *reply;
- 	u16 reply_length;
- };
-
-#define ICC_IOCTL_CMD _IOWR(ICC_MAJOR, 1, struct icc_cmd)
 
 static u16 checksum(const void *p, int length)
 {
@@ -293,9 +281,14 @@ int apcie_icc_cmd(u8 major, u16 minor, const void *data, u16 length,
 {
 	int ret;
 
+	if (bpcie_status() == 1)
+		return bpcie_icc_cmd(major, minor, data, length,
+				     reply, reply_length);
+
 	mutex_lock(&icc_mutex);
 	if (!icc_sc) {
 		pr_err("icc: not ready\n");
+		mutex_unlock(&icc_mutex);
 		return -EAGAIN;
 	}
 	ret = _apcie_icc_cmd(icc_sc, major, minor, data, length, reply, reply_length,

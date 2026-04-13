@@ -17,6 +17,7 @@
 #include <asm/ps4.h>
 
 #include "aeolia.h"
+#include "baikal.h"
 
 
 #define     MSI_DATA_VECTOR_SHIFT	0
@@ -318,8 +319,7 @@ static int apcie_is_compatible_device(struct pci_dev *dev)
 		return 0;
 	}
 	return (dev->device == PCI_DEVICE_ID_SONY_AEOLIA_PCIE ||
-		dev->device == PCI_DEVICE_ID_SONY_BELIZE_PCIE ||
-		dev->device == PCI_DEVICE_ID_SONY_BAIKAL_PCIE);
+		dev->device == PCI_DEVICE_ID_SONY_BELIZE_PCIE);
 }
 
 int apcie_assign_irqs(struct pci_dev *dev, int nvec)
@@ -332,6 +332,11 @@ int apcie_assign_irqs(struct pci_dev *dev, int nvec)
 
 	sc_devfn = (dev->devfn & ~7) | AEOLIA_FUNC_ID_PCIE;
 	sc_dev = pci_get_slot(dev->bus, sc_devfn);
+
+	if (ps4_sb_uses_bpcie(sc_dev ? sc_dev->device : 0)) {
+		ret = bpcie_assign_irqs(dev, nvec);
+		goto fail;
+	}
 
 	if (!apcie_is_compatible_device(sc_dev)) {
 		dev_err(&dev->dev, "apcie: this is not an Aeolia device\n");
@@ -392,6 +397,15 @@ EXPORT_SYMBOL(apcie_assign_irqs);
 
 void apcie_free_irqs(unsigned int virq, unsigned int nr_irqs)
 {
+	struct irq_data *data = irq_get_irq_data(virq);
+	struct msi_desc *desc = data ? irq_data_get_msi_desc(data) : NULL;
+	struct pci_dev *pdev = desc ? msi_desc_to_pci_dev(desc) : NULL;
+
+	if (pdev && ps4_sb_uses_bpcie(pdev->device)) {
+		bpcie_free_irqs(virq, nr_irqs);
+		return;
+	}
+
 	irq_domain_free_irqs(virq, nr_irqs);
 }
 EXPORT_SYMBOL(apcie_free_irqs);
@@ -621,7 +635,6 @@ static int apcie_resume(struct pci_dev *dev) {
 static const struct pci_device_id apcie_pci_tbl[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_SONY, PCI_DEVICE_ID_SONY_AEOLIA_PCIE), },
 	{ PCI_DEVICE(PCI_VENDOR_ID_SONY, PCI_DEVICE_ID_SONY_BELIZE_PCIE), },
-	{ PCI_DEVICE(PCI_VENDOR_ID_SONY, PCI_DEVICE_ID_SONY_BAIKAL_PCIE), },
 	{ }
 };
 MODULE_DEVICE_TABLE(pci, apcie_pci_tbl);
