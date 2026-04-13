@@ -255,6 +255,8 @@ fi
 if [[ "$DO_BUILD" == "1" ]]; then
     echo -e "\e[1;34m[*]\e[0m Applying invariant config..."
 
+    LOCALVERSION_SUFFIX="-Strawberry-$(lto_label)-"
+
     # Build system / LTO
     if [[ "$LTO_FLAVOR" == "full" ]]; then
         echo -e "\e[1;34m[*]\e[0m Enabling FullLTO..."
@@ -266,6 +268,7 @@ if [[ "$DO_BUILD" == "1" ]]; then
         scripts/config --disable CONFIG_LTO_CLANG_FULL
     fi
     scripts/config --disable CONFIG_LOCALVERSION_AUTO
+    scripts/config --set-str CONFIG_LOCALVERSION "${LOCALVERSION_SUFFIX}"
 
     # Kernel compression
     scripts/config --disable CONFIG_KERNEL_XZ
@@ -530,7 +533,8 @@ if [[ "$DO_BUILD" == "1" ]]; then
     echo -e "\e[1;34m[*]\e[0m Running prepare..."
     make "${MAKE_OPTS[@]}" prepare
 
-    echo -e "\e[1;34m[*]\e[0m Building bzImage [profile: ${PROFILE}, lto: $(lto_label)] with ${JOBS} jobs..."
+    CURRENT_LTO_LABEL="$(lto_label)"
+    echo -e "\e[1;34m[*]\e[0m Building bzImage [profile: ${PROFILE}, LTO: ${CURRENT_LTO_LABEL}] with ${JOBS} jobs..."
     time make "${MAKE_OPTS[@]}" bzImage
 
     BZIMAGE="arch/x86/boot/bzImage"
@@ -544,7 +548,7 @@ if [[ "$DO_BUILD" == "1" ]]; then
     cp .config "${OUTPUT_DIR}/.config"
 
     KVER="$(cat include/config/kernel.release 2>/dev/null || echo "unknown")"
-    LTO_LABEL="$(lto_label)"
+    LTO_LABEL="${CURRENT_LTO_LABEL}"
 
     PROFILE_LABEL="Server"
     if [[ "$PROFILE" == "general" ]]; then
