@@ -40,6 +40,7 @@
 
 #ifdef CONFIG_X86_PS4
 #include <asm/ps4.h>
+#include "../../ps4/aeolia.h"
 #endif
 
 #include "sdhci.h"
@@ -372,10 +373,9 @@ static int aeolia_probe_slot(struct sdhci_pci_slot *slot)
 	* for standard clock modes (SDR50, SDR104), and instead calculates it on the fly
 	* using host capabiilites. So it should be harmless in all cases.
 	*/
-	if ((slot->chip->pdev->device == PCI_DEVICE_ID_SONY_AEOLIA_SDHCI) || \
-	    (slot->chip->pdev->device == PCI_DEVICE_ID_SONY_BELIZE_SDHCI)) {
+	if (ps4_sb_desc_by_device(slot->chip->pdev->device)) {
 		slot->host->quirks2 |= SDHCI_QUIRK2_PRESET_VALUE_BROKEN;
-        }
+	}
 
 	return 0;
 }
@@ -401,8 +401,8 @@ static const struct sdhci_pci_fixes sdhci_aeolia = {
 	.quirks		= SDHCI_QUIRK_BROKEN_TIMEOUT_VAL |
 			  SDHCI_QUIRK_DELAY_AFTER_POWER |
 			  SDHCI_QUIRK_SINGLE_POWER_WRITE,
-	.quirks2	= SDHCI_QUIRK2_PRESET_VALUE_BROKEN,
-			  SDHCI_QUIRK2_CLOCK_DIV_ZERO_BROKEN,
+	.quirks2	= SDHCI_QUIRK2_PRESET_VALUE_BROKEN |
+			  SDHCI_QUIRK2_CLOCK_DIV_ZERO_BROKEN |
 			  SDHCI_QUIRK2_TUNING_WORK_AROUND,
 };
 #endif
@@ -2040,8 +2040,7 @@ static const struct pci_device_id pci_ids[] = {
 	#ifdef CONFIG_X86_PS4
 	SDHCI_PCI_DEVICE(SONY, AEOLIA_SDHCI, aeolia),
 	SDHCI_PCI_DEVICE(SONY, BELIZE_SDHCI, aeolia),
-	// TODO (ps4patches): What is this doing in comments?
-	//SDHCI_PCI_DEVICE(SONY, BAIKAL_SDHCI, aeolia),
+	SDHCI_PCI_DEVICE(SONY, BAIKAL_SDHCI, aeolia),
 	#endif
 	SDHCI_PCI_DEVICE(GLI, 9750, gl9750),
 	SDHCI_PCI_DEVICE(GLI, 9755, gl9755),
