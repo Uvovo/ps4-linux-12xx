@@ -336,7 +336,7 @@ static int aeolia_probe(struct sdhci_pci_chip *chip)
 {
 	chip->num_slots = 1;
 	chip->first_bar = 0;
-	if (apcie_status() == 0)
+	if (apcie_irq_domain_status() == 0)
 		return -EPROBE_DEFER;
 
 	chip->pdev->class &= ~0x0000FF;
@@ -346,10 +346,18 @@ static int aeolia_probe(struct sdhci_pci_chip *chip)
 
 static int aeolia_probe_slot(struct sdhci_pci_slot *slot)
 {
-	int err = apcie_assign_irqs(slot->chip->pdev, 1);
+	int err;
+
+	dev_info(&slot->chip->pdev->dev,
+		 "sdhci IRQ setup: requesting 1 vector via apcie_assign_irqs for device=%#06x\n",
+		 slot->chip->pdev->device);
+	err = apcie_assign_irqs(slot->chip->pdev, 1);
+	dev_info(&slot->chip->pdev->dev,
+		 "sdhci IRQ setup: apcie_assign_irqs returned %d irq=%d\n",
+		 err, err > 0 ? slot->chip->pdev->irq : 0);
 	if (err <= 0) {
 		dev_err(&slot->chip->pdev->dev, "failed to get IRQ: %d\n", err);
-		return -ENODEV;
+		return err == -EPROBE_DEFER ? err : -ENODEV;
 	}
 	slot->host->irq = slot->chip->pdev->irq;
 

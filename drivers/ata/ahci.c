@@ -1754,21 +1754,30 @@ static int ahci_get_irq_vector(struct ata_host *host, int port)
 	return pci_irq_vector(to_pci_dev(host->dev), port);
 }
 
-static void ahci_init_irq(struct pci_dev *pdev, unsigned int n_ports,
-			struct ahci_host_priv *hpriv)
+static int ahci_init_irq(struct pci_dev *pdev, unsigned int n_ports,
+			 struct ahci_host_priv *hpriv)
 {
 	int nvec;
+#ifdef CONFIG_X86_PS4
+	int ret;
+#endif
 
-	#ifdef CONFIG_X86_PS4
+#ifdef CONFIG_X86_PS4
 	if (pdev->vendor == PCI_VENDOR_ID_SONY) {
-		apcie_assign_irqs(pdev, n_ports);
-		return;
+		dev_info(&pdev->dev,
+			 "ahci IRQ setup: requesting %u vectors via apcie_assign_irqs for device=%#06x\n",
+			 n_ports, pdev->device);
+		ret = apcie_assign_irqs(pdev, n_ports);
+		dev_info(&pdev->dev,
+			 "ahci IRQ setup: apcie_assign_irqs returned %d irq=%d\n",
+			 ret, ret > 0 ? pdev->irq : 0);
+		return ret < 0 ? ret : 0;
 	}
-	#endif
-	
+#endif
+
 	if (hpriv->flags & AHCI_HFLAG_NO_MSI) {
 		pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_INTX);
-		return;
+		return 0;
 	}
 
 	/*
@@ -1783,7 +1792,7 @@ static void ahci_init_irq(struct pci_dev *pdev, unsigned int n_ports,
 			if (!(readl(hpriv->mmio + HOST_CTL) & HOST_MRSM)) {
 				hpriv->get_irq_vector = ahci_get_irq_vector;
 				hpriv->flags |= AHCI_HFLAG_MULTI_MSI;
-				return;
+				return 0;
 			}
 
 			/*
@@ -1803,8 +1812,9 @@ static void ahci_init_irq(struct pci_dev *pdev, unsigned int n_ports,
 	 */
 	nvec = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_MSI);
 	if (nvec == 1)
-		return;
+		return 0;
 	pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_MSIX | PCI_IRQ_INTX);
+	return 0;
 }
 
 static void ahci_mark_external_port(struct ata_port *ap)
@@ -1930,11 +1940,11 @@ static int ahci_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	WARN_ON((int)ATA_MAX_QUEUE > AHCI_MAX_CMDS);
 
 	
-	#ifdef CONFIG_X86_PS4
+#ifdef CONFIG_X86_PS4
 	/* This will return negative on non-PS4 platforms */
-	if (apcie_status() == 0)
+	if (apcie_irq_domain_status() == 0)
 		return -EPROBE_DEFER;
-	#endif
+#endif
 
 	ata_print_version_once(&pdev->dev, DRV_VERSION);
 
@@ -2111,7 +2121,9 @@ static int ahci_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	}
 	host->private_data = hpriv;
 
-	ahci_init_irq(pdev, n_ports, hpriv);
+	rc = ahci_init_irq(pdev, n_ports, hpriv);
+	if (rc)
+		goto err_rm_sysfs_file;
 
 	hpriv->irq = pci_irq_vector(pdev, 0);
 

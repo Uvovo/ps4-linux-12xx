@@ -4907,11 +4907,11 @@ static int sky2_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	u32 reg;
 	char buf1[16];
 
-	#ifdef CONFIG_X86_PS4
+#ifdef CONFIG_X86_PS4
 	/* This will return negative on non-PS4 platforms */
-	if (apcie_status() == 0)
+	if (apcie_irq_domain_status() == 0)
 		return -EPROBE_DEFER;
-	#endif
+#endif
 
 	err = pci_enable_device(pdev);
 	if (err) {

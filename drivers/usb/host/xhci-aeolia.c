@@ -30,9 +30,35 @@ struct aeolia_xhci {
 	struct usb_hcd *hcd[NR_DEVICES];
 };
 
-static inline const struct ps4_sb_desc *ps4_xhci_desc(struct pci_dev *pdev)
+static struct pci_dev *ps4_xhci_get_glue_device(struct pci_dev *pdev)
 {
-	return ps4_sb_desc_by_device(pdev->device);
+	unsigned int glue_devfn = (pdev->devfn & ~7) | AEOLIA_FUNC_ID_PCIE;
+
+	return pci_get_slot(pdev->bus, glue_devfn);
+}
+
+/*
+ * Prefer the glue function so Baikal model detection stays anchored to the
+ * southbridge glue device instead of whichever child function probed first.
+ */
+static const struct ps4_sb_desc *ps4_xhci_desc(struct pci_dev *pdev)
+{
+	const struct ps4_sb_desc *desc = NULL;
+	struct pci_dev *glue_pdev = ps4_xhci_get_glue_device(pdev);
+
+	if (glue_pdev) {
+		desc = ps4_sb_desc_by_device(glue_pdev->device);
+		pci_dev_put(glue_pdev);
+	}
+
+	return desc ? desc : ps4_sb_desc_by_device(pdev->device);
+}
+
+static inline enum ps4_sb_model ps4_xhci_model(struct pci_dev *pdev)
+{
+	const struct ps4_sb_desc *desc = ps4_xhci_desc(pdev);
+
+	return desc ? desc->model : PS4_SB_MODEL_UNKNOWN;
 }
 
 static inline bool ps4_xhci_has_ahci(struct pci_dev *pdev)
@@ -235,14 +261,14 @@ static int ahci_init_one(struct pci_dev *pdev)
 		r_mem->r_bustag = 1;//mem
 		r_mem->r_bushandle = hpriv->mmio;
 
-		ctlr = kzalloc(sizeof(*ctlr), GFP_KERNEL);
-		if (ctlr) {
-			ctlr->r_mem = r_mem;
-			ctlr->dev_id = ps4_sb_model_by_device(pdev->device) ==
-				       PS4_SB_MODEL_BAIKAL ?
-				       0x90d9104d : 0x90ca104d;
-			ctlr->trace_len = 6;
-			bpcie_sata_phy_init(&pdev->dev, ctlr);
+			ctlr = kzalloc(sizeof(*ctlr), GFP_KERNEL);
+			if (ctlr) {
+				ctlr->r_mem = r_mem;
+				ctlr->dev_id = ps4_xhci_model(pdev) ==
+					       PS4_SB_MODEL_BAIKAL ?
+					       0x90d9104d : 0x90ca104d;
+				ctlr->trace_len = 6;
+				bpcie_sata_phy_init(&pdev->dev, ctlr);
 			kfree(ctlr);
 		}
 		kfree(r_mem);
@@ -381,10 +407,30 @@ static int xhci_aeolia_probe(struct pci_dev *dev, const struct pci_device_id *id
 {
 	int idx;
 	int retval;
+	int southbridge_status;
+	int full_status;
 	struct aeolia_xhci *axhci;
+	const struct ps4_sb_desc *desc;
+	struct pci_dev *glue_pdev;
 
-	if (apcie_status() == 0)
+	desc = ps4_xhci_desc(dev);
+	glue_pdev = ps4_xhci_get_glue_device(dev);
+	southbridge_status = apcie_irq_domain_status();
+	full_status = apcie_status();
+	dev_info(&dev->dev,
+		 "xhci IRQ setup: child_device=%#06x model=%s glue=%s/%#06x irq_ready=%d full_ready=%d\n",
+		 dev->device, desc ? desc->name : "unknown",
+		 glue_pdev ? pci_name(glue_pdev) : "<none>",
+		 glue_pdev ? glue_pdev->device : 0,
+		 southbridge_status, full_status);
+	if (glue_pdev)
+		pci_dev_put(glue_pdev);
+
+	if (southbridge_status == 0) {
+		dev_info(&dev->dev,
+			 "xhci IRQ setup: deferring until southbridge is ready\n");
 		return -EPROBE_DEFER;
+	}
 
 	if (pci_enable_device(dev) < 0)
 		return -ENODEV;
@@ -396,7 +442,13 @@ static int xhci_aeolia_probe(struct pci_dev *dev, const struct pci_device_id *id
 	}
 	pci_set_drvdata(dev, axhci);
 
+	dev_info(&dev->dev,
+		 "xhci IRQ setup: requesting %d vectors via apcie_assign_irqs\n",
+		 NR_DEVICES);
 	axhci->nr_irqs = retval = apcie_assign_irqs(dev, NR_DEVICES);
+	dev_info(&dev->dev,
+		 "xhci IRQ setup: apcie_assign_irqs returned %d irq=%d\n",
+		 retval, retval > 0 ? dev->irq : 0);
 	if (retval < 0) {
 		goto free_axhci;
 	}

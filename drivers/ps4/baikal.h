@@ -98,6 +98,7 @@ static inline int bpcie_irqnum(struct bpcie_dev *sc, int index)
 
 int bpcie_assign_irqs(struct pci_dev *dev, int nvec);
 void bpcie_free_irqs(unsigned int virq, unsigned int nr_irqs);
+int bpcie_irq_domain_status(void);
 int bpcie_status(void);
 int bpcie_icc_cmd(u8 major, u16 minor, const void *data, u16 length,
 		  void *reply, u16 reply_length);

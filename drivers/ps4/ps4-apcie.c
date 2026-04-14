@@ -325,6 +325,7 @@ static int apcie_is_compatible_device(struct pci_dev *dev)
 int apcie_assign_irqs(struct pci_dev *dev, int nvec)
 {
 	int ret;
+	bool use_bpcie;
 	unsigned int sc_devfn;
 	struct pci_dev *sc_dev;
 	struct apcie_dev *sc;
@@ -332,9 +333,17 @@ int apcie_assign_irqs(struct pci_dev *dev, int nvec)
 
 	sc_devfn = (dev->devfn & ~7) | AEOLIA_FUNC_ID_PCIE;
 	sc_dev = pci_get_slot(dev->bus, sc_devfn);
+	use_bpcie = ps4_sb_uses_bpcie(sc_dev ? sc_dev->device : dev->device);
+	dev_info(&dev->dev,
+		 "apcie_assign_irqs: request nvec=%d devfn=%#x glue=%s glue_device=%#06x use_bpcie=%d\n",
+		 nvec, dev->devfn, sc_dev ? pci_name(sc_dev) : "<none>",
+		 sc_dev ? sc_dev->device : 0, use_bpcie);
 
-	if (ps4_sb_uses_bpcie(sc_dev ? sc_dev->device : 0)) {
+	if (use_bpcie) {
 		ret = bpcie_assign_irqs(dev, nvec);
+		dev_info(&dev->dev,
+			 "apcie_assign_irqs: Baikal route returned %d irq=%d\n",
+			 ret, ret > 0 ? dev->irq : 0);
 		goto fail;
 	}
 

@@ -31,6 +31,8 @@ static const int subfuncs_per_func[BAIKAL_NUM_FUNCS] = {
 
 static struct msi_domain_info bpcie_msi_domain_info;
 
+/* Separate "MSI plumbing is live" from "UART/ICC sideband is fully initialized". */
+static bool bpcie_irq_domain_ready;
 bool bpcie_initialized;
 
 static inline u32 glue_read32(struct bpcie_dev *sc, u32 offset)
@@ -247,17 +249,39 @@ static void bpcie_set_child_domains(struct bpcie_dev *sc, struct irq_domain *dom
 int bpcie_assign_irqs(struct pci_dev *dev, int nvec)
 {
 	struct pci_dev *glue_pdev;
+	struct bpcie_dev *sc;
 	int ret;
 
+	dev_info(&dev->dev,
+		 "bpcie_assign_irqs: request nvec=%d devfn=%#x child_device=%#06x\n",
+		 nvec, dev->devfn, dev->device);
+
 	glue_pdev = bpcie_get_glue_device(dev);
+	if (!glue_pdev) {
+		dev_info(&dev->dev,
+			 "bpcie_assign_irqs: glue function missing, deferring probe\n");
+		return -EPROBE_DEFER;
+	}
+
 	if (!bpcie_is_compatible_device(glue_pdev)) {
-		dev_err(&dev->dev, "bpcie: this is not a Baikal device\n");
+		dev_err(&dev->dev,
+			"bpcie_assign_irqs: glue %s device %#06x is not Baikal\n",
+			pci_name(glue_pdev), glue_pdev->device);
 		ret = -ENODEV;
 		goto out_put;
 	}
-	if (!pci_get_drvdata(glue_pdev)) {
-		dev_err(&dev->dev, "bpcie: not ready yet, cannot assign IRQs\n");
-		ret = -ENODEV;
+
+	sc = pci_get_drvdata(glue_pdev);
+	dev_info(&dev->dev,
+		 "bpcie_assign_irqs: glue=%s glue_device=%#06x sc=%d irq_ready=%d full_ready=%d irqdomain=%d glue_nvec=%d\n",
+		 pci_name(glue_pdev), glue_pdev->device, !!sc,
+		 bpcie_irq_domain_ready, bpcie_initialized,
+		 sc ? !!sc->irqdomain : 0, sc ? sc->nvec : 0);
+
+	if (!sc || !bpcie_irq_domain_ready) {
+		dev_info(&dev->dev,
+			 "bpcie_assign_irqs: deferring until glue IRQ domain is ready\n");
+		ret = -EPROBE_DEFER;
 		goto out_put;
 	}
 
@@ -269,6 +293,9 @@ int bpcie_assign_irqs(struct pci_dev *dev, int nvec)
 	ret = pci_alloc_irq_vectors(dev, 1, nvec, PCI_IRQ_MSI);
 	if (ret > 0)
 		dev->irq = pci_irq_vector(dev, 0);
+	dev_info(&dev->dev,
+		 "bpcie_assign_irqs: pci_alloc_irq_vectors returned %d irq=%d\n",
+		 ret, ret > 0 ? dev->irq : 0);
 
 out_put:
 	if (glue_pdev)
@@ -305,11 +332,17 @@ int bpcie_status(void)
 	return bpcie_initialized;
 }
 
+int bpcie_irq_domain_status(void)
+{
+	return bpcie_irq_domain_ready;
+}
+
 static void bpcie_glue_remove(struct bpcie_dev *sc);
 
 static int bpcie_glue_init(struct bpcie_dev *sc)
 {
-	sc_info("bpcie glue probe\n");
+	sc_info("bpcie_glue_init: begin devfn=%#x device=%#06x\n",
+		sc->pdev->devfn, sc->pdev->device);
 
 	if (!request_mem_region(pci_resource_start(sc->pdev, 2),
 				pci_resource_len(sc->pdev, 2),
@@ -338,8 +371,10 @@ static int bpcie_glue_init(struct bpcie_dev *sc)
 		bpcie_glue_remove(sc);
 		return -EIO;
 	}
+	sc_info("bpcie_glue_init: created IRQ domain\n");
 
 	bpcie_set_child_domains(sc, sc->irqdomain);
+	sc_info("bpcie_glue_init: installed child MSI domains\n");
 
 	sc->nvec = pci_alloc_irq_vectors(sc->pdev, BPCIE_SUBFUNC_ICC + 1,
 					 BPCIE_NUM_SUBFUNCS, PCI_IRQ_MSI);
@@ -349,6 +384,8 @@ static int bpcie_glue_init(struct bpcie_dev *sc)
 		return sc->nvec ? sc->nvec : -EIO;
 	}
 	sc->pdev->irq = pci_irq_vector(sc->pdev, 0);
+	sc_info("bpcie_glue_init: glue IRQ vectors=%d first_irq=%d\n",
+		sc->nvec, sc->pdev->irq);
 
 	return 0;
 }
@@ -356,6 +393,9 @@ static int bpcie_glue_init(struct bpcie_dev *sc)
 static void bpcie_glue_remove(struct bpcie_dev *sc)
 {
 	sc_info("bpcie glue remove\n");
+	if (bpcie_irq_domain_ready)
+		sc_info("bpcie_glue_remove: clearing IRQ/domain ready state\n");
+	bpcie_irq_domain_ready = false;
 
 	if (sc->nvec > 0) {
 		pci_free_irq_vectors(sc->pdev);
@@ -402,6 +442,11 @@ static int bpcie_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	struct bpcie_dev *sc;
 	int ret;
 
+	dev_info(&dev->dev, "bpcie_probe: begin devfn=%#x device=%#06x\n",
+		 dev->devfn, dev->device);
+	bpcie_initialized = false;
+	bpcie_irq_domain_ready = false;
+
 	ret = pci_enable_device(dev);
 	if (ret)
 		return ret;
@@ -426,16 +471,35 @@ static int bpcie_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	}
 
 	ret = bpcie_glue_init(sc);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_info(&dev->dev, "bpcie_probe: bpcie_glue_init failed: %d\n",
+			 ret);
 		goto free_bars;
+	}
+	bpcie_irq_domain_ready = true;
+	dev_info(&dev->dev,
+		 "bpcie_probe: glue init complete, IRQ/domain ready=1 full_ready=0\n");
+	dev_info(&dev->dev, "bpcie_probe: starting UART init\n");
+
 	ret = bpcie_uart_init(sc);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_info(&dev->dev, "bpcie_probe: bpcie_uart_init failed: %d\n",
+			 ret);
 		goto remove_glue;
+	}
+	dev_info(&dev->dev, "bpcie_probe: UART init complete, starting ICC init\n");
+
 	ret = bpcie_icc_init(sc);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_info(&dev->dev, "bpcie_probe: bpcie_icc_init failed: %d\n",
+			 ret);
 		goto remove_uart;
+	}
 
 	bpcie_initialized = true;
+	dev_info(&dev->dev,
+		 "bpcie_probe: full init complete, IRQ/domain ready=%d full_ready=%d\n",
+		 bpcie_irq_domain_ready, bpcie_initialized);
 	return 0;
 
 remove_uart:
@@ -443,6 +507,7 @@ remove_uart:
 remove_glue:
 	bpcie_glue_remove(sc);
 free_bars:
+	pci_set_drvdata(dev, NULL);
 	if (sc->bar0)
 		iounmap(sc->bar0);
 	if (sc->bar2)
@@ -470,6 +535,7 @@ static void bpcie_remove(struct pci_dev *dev)
 		iounmap(sc->bar2);
 	if (sc->bar4)
 		iounmap(sc->bar4);
+	pci_set_drvdata(dev, NULL);
 	kfree(sc);
 	pci_disable_device(dev);
 }
