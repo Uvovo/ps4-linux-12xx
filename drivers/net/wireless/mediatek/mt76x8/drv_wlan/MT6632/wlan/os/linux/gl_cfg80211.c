@@ -2659,7 +2659,7 @@ int mtk_cfg80211_assoc(struct wiphy *wiphy, struct net_device *ndev, struct cfg8
 
 #if CFG_SUPPORT_NFC_BEAM_PLUS
 
-static int mtk_cfg80211_testmode_get_scan_done(IN struct wiphy *wiphy, IN void *data, IN int len, IN P_GLUE_INFO_T prGlueInfo)
+static __maybe_unused int mtk_cfg80211_testmode_get_scan_done(IN struct wiphy *wiphy, IN void *data, IN int len, IN P_GLUE_INFO_T prGlueInfo)
 {
 #define NL80211_TESTMODE_P2P_SCANDONE_INVALID 0
 #define NL80211_TESTMODE_P2P_SCANDONE_STATUS 1

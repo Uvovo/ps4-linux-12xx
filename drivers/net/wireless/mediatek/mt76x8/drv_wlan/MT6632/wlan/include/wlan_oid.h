@@ -383,7 +383,7 @@ typedef struct _PARAM_BSSID_EX_T {
 	ENUM_PARAM_OP_MODE_T eOpMode;
 	PARAM_RATES_EX rSupportedRates;
 	UINT_32 u4IELength;
-	UINT_8 aucIEs[1];
+	UINT_8 aucIEs[];
 } PARAM_BSSID_EX_T, *P_PARAM_BSSID_EX_T;
 
 typedef struct _PARAM_BSSID_LIST_EX {
