@@ -196,7 +196,7 @@ static PUINT_8 apucEepromName[] = {
 };
 #endif
 
-static int CFG80211_Suspend(struct wiphy *wiphy, struct cfg80211_wowlan *wow)
+static __maybe_unused int CFG80211_Suspend(struct wiphy *wiphy, struct cfg80211_wowlan *wow)
 {
 	DBGLOG(INIT, INFO, "CFG80211 suspend CB\n");
 
@@ -2012,7 +2012,7 @@ int set_p2p_mode_handler(struct net_device *netdev, PARAM_CUSTOM_P2P_SET_STRUCT_
 * \retval VOID
 */
 /*----------------------------------------------------------------------------*/
-static VOID wlanGetParseConfig(P_ADAPTER_T prAdapter)
+static __maybe_unused VOID wlanGetParseConfig(P_ADAPTER_T prAdapter)
 {
 	PUINT_8 pucConfigBuf;
 	UINT_32 u4ConfigReadLen;

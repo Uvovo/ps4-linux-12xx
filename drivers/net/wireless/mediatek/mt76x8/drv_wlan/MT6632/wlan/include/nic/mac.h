@@ -1425,7 +1425,7 @@ typedef struct _BOOTP_PROTOCOL_T {
 	UINT_8 aucCHAddr[16];
 	UINT_8 aucServerName[64];
 	UINT_8 aucFileName[128];
-	UINT_8 aucOptions[0];
+	UINT_8 aucOptions[];
 } __KAL_ATTRIB_PACKED__ BOOTP_PROTOCOL_T, *P_BOOTP_PROTOCOL_T;
 
 /* IEEE 802.11 WLAN Frame Structure */
@@ -1803,7 +1803,7 @@ typedef struct _IE_TPC_REPORT_T {
 typedef struct _IE_SUPPORTED_CHANNELS_T {
 	UINT_8 ucId;
 	UINT_8 ucLength;
-	UINT_8 ucChannelNum[0];
+	UINT_8 ucChannelNum[];
 } __KAL_ATTRIB_PACKED__ IE_SUPPORTED_CHANNELS_T, *P_IE_SUPPORTED_CHANNELS_T;
 
 /* 7.3.2.20 Channel Switch Announcement element*/
@@ -1987,7 +1987,7 @@ typedef struct _IE_QUIET_T {
 typedef struct _IE_EXT_CAP_T {
 	UINT_8 ucId;
 	UINT_8 ucLength;
-	UINT_8 aucCapabilities[1];
+	UINT_8 aucCapabilities[];
 } __KAL_ATTRIB_PACKED__ IE_EXT_CAP_T, *P_EXT_CAP_T;
 
 /* 7.3.2.27 Extended Capabilities element */

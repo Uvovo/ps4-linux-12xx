@@ -919,11 +919,8 @@ TdlsDataFrameSend_SETUP_RSP(ADAPTER_T *prAdapter,
 	}
 
 	if (pAppendIe != NULL) {
-		if ((ucActionCode != TDLS_FRM_ACTION_TEARDOWN) ||
-		    ((ucActionCode == TDLS_FRM_ACTION_TEARDOWN))) {
-			kalMemCopy(pPkt, pAppendIe, AppendIeLen);
-			LR_TDLS_FME_FIELD_FILL(AppendIeLen);
-		}
+		kalMemCopy(pPkt, pAppendIe, AppendIeLen);
+		LR_TDLS_FME_FIELD_FILL(AppendIeLen);
 	}
 
 	/* 7. Append Supported Operating Classes IE */
