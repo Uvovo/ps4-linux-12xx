@@ -3476,7 +3476,7 @@ INT_32 TxBfPfmuMemRelease(struct net_device *prNetDev, UINT_8 ucWlanId)
 	return i4Status;
 }
 
-INT_32 TxBfBssInfoUpdate(struct net_device *prNetDev, UINT_8 ucOwnMacIdx, UINT_8 ucBssIdx, UINT_8 ucBssId[MAC_ADDR_LEN]) /* Warning: defined but not used */
+static __maybe_unused INT_32 TxBfBssInfoUpdate(struct net_device *prNetDev, UINT_8 ucOwnMacIdx, UINT_8 ucBssIdx, UINT_8 ucBssId[MAC_ADDR_LEN]) /* Warning: defined but not used */
 {
 	INT_32 i4Status = 0;
 	P_GLUE_INFO_T prGlueInfo = NULL;

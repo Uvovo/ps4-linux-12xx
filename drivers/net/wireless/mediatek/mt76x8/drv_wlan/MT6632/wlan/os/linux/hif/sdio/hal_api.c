@@ -617,7 +617,7 @@ BOOLEAN halTxIsDataBufEnough(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduIn
 * @return FALSE     no available resource to release
 */
 /*----------------------------------------------------------------------------*/
-static BOOLEAN halTxCalculateResource(IN P_ADAPTER_T prAdapter, IN PUINT_16 au2TxRlsCnt, OUT PUINT_16 au2FreeTcResource)
+static __maybe_unused BOOLEAN halTxCalculateResource(IN P_ADAPTER_T prAdapter, IN PUINT_16 au2TxRlsCnt, OUT PUINT_16 au2FreeTcResource)
 {
 	P_TX_TCQ_STATUS_T prTcqStatus;
 	BOOLEAN bStatus = FALSE;
@@ -2210,5 +2210,4 @@ VOID halTxResourceResetHwTQCounter(IN P_ADAPTER_T prAdapter)
         if (pu4WHISR)
                 kalMemFree(pu4WHISR, PHY_MEM_TYPE, sizeof(UINT_32));
 }
-
 

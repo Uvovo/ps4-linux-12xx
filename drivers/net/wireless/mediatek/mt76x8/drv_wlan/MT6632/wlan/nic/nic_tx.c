@@ -1432,7 +1432,7 @@ nicTxFillDataDesc(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInfo)
 	nicTxFillDesc(prAdapter, prMsduInfo, pucOutputBuf, NULL);
 }
 
-static VOID
+static __maybe_unused VOID
 nicTxCopyDesc(IN P_ADAPTER_T prAdapter, IN PUINT_8 pucTarTxDesc, IN PUINT_8 pucSrcTxDesc, OUT PUINT_8 pucTxDescLength)
 {
 	UINT_8 ucTxDescLength;
