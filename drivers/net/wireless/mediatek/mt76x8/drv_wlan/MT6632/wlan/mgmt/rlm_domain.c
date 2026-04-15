@@ -669,7 +669,7 @@ DOMAIN_INFO_ENTRY arSupportedRegDomains_Passive[] = {
 
 	{
 	 /* default passive channel table is empty */
-	 COUNTRY_CODE_NULL, 0,
+	 NULL, 0,
 	 {
 	  {81, BAND_2G4, CHNL_SPAN_5, 1, 0, 0}
 	  ,			/* CH_SET_2G4_1_14_NA */
@@ -3192,5 +3192,4 @@ void rlmDomainAssert(BOOLEAN cond)
 	}
 
 }
-
 

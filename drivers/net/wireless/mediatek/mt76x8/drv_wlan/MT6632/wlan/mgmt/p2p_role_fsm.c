@@ -1765,7 +1765,7 @@ VOID p2pRoleFsmRunEventJoinComplete(IN P_ADAPTER_T prAdapter, IN P_MSG_HDR_T prM
 			 */
 			if (prJoinInfo->prTargetBssDesc)
 				scanReportBss2Cfg80211(prAdapter,
-						       OP_MODE_P2P_DEVICE, prJoinInfo->prTargetBssDesc);
+						       BSS_TYPE_P2P_DEVICE, prJoinInfo->prTargetBssDesc);
 #if CFG_WPS_DISCONNECT || (KERNEL_VERSION(4, 4, 0) <= CFG80211_VERSION_CODE)
 			kalP2PGCIndicateConnectionStatus(prAdapter->prGlueInfo,
 							prP2pRoleFsmInfo->ucRoleIndex,

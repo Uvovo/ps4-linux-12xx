@@ -2370,12 +2370,12 @@ VOID bssSetTIMBitmap(IN P_ADAPTER_T prAdapter, IN P_BSS_INFO_T prBssInfo, IN UIN
 
 #endif /* CFG_SUPPORT_AAA */
 
-static VOID bssCreateStaRecFromAuth(IN P_ADAPTER_T prAdapter)
+static __maybe_unused VOID bssCreateStaRecFromAuth(IN P_ADAPTER_T prAdapter)
 {
 
 }
 
-static VOID bssUpdateStaRecFromAssocReq(IN P_ADAPTER_T prAdapter)
+static __maybe_unused VOID bssUpdateStaRecFromAssocReq(IN P_ADAPTER_T prAdapter)
 {
 
 }

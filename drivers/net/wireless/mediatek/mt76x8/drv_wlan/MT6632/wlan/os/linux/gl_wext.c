@@ -251,8 +251,10 @@ wext_support_ioctl_SIOCSIWPMKSA_Action(IN struct net_device *prDev, IN char *prE
 ********************************************************************************
 */
 
-static void MAP_CHANNEL_ID_TO_KHZ(UINT_32 ch, UINT_32 khz)
+static __maybe_unused UINT_32 MAP_CHANNEL_ID_TO_KHZ(UINT_32 ch)
 {
+	UINT_32 khz;
+
 	switch (ch) {
 	case 1:
 		khz = 2412000;
@@ -405,6 +407,8 @@ static void MAP_CHANNEL_ID_TO_KHZ(UINT_32 ch, UINT_32 khz)
 		khz = 2412000;
 		break;
 	}
+
+	return khz;
 }
 
 /*----------------------------------------------------------------------------*/

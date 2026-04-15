@@ -499,7 +499,7 @@ p2pFuncUpdateBssInfoForJOIN(IN P_ADAPTER_T prAdapter,
 	} while (FALSE);
 }				/* end of p2pUpdateBssInfoForJOIN() */
 
-static WLAN_STATUS
+static __maybe_unused WLAN_STATUS
 p2pFunMgmtFrameTxDone(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInfo, IN ENUM_TX_RESULT_CODE_T rTxDoneStatus)
 {
 	BOOLEAN fgIsSuccess = FALSE;
@@ -4131,7 +4131,7 @@ p2pFuncGenerateBeaconProbeRsp(IN P_ADAPTER_T prAdapter,
 	return rWlanStatus;
 }				/* p2pFuncGenerateBeaconProbeRsp */
 
-static WLAN_STATUS
+static __maybe_unused WLAN_STATUS
 p2pFuncComposeBeaconProbeRspTemplate(IN P_ADAPTER_T prAdapter,
 				     IN P_BSS_INFO_T prP2pBssInfo,
 				     IN PUINT_8 pucBcnBuffer,

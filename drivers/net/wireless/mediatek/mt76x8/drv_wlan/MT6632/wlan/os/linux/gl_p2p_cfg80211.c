@@ -2101,7 +2101,7 @@ int mtk_p2p_cfg80211_cancel_remain_on_channel(struct wiphy *wiphy, struct wirele
 	P_MSG_P2P_CHNL_ABORT_T prMsgChnlAbort = (P_MSG_P2P_CHNL_ABORT_T) NULL;
 
 	do {
-		if ((wiphy == NULL) /* || (dev == NULL) */)
+		if (wiphy == NULL /* || (dev == NULL) */)
 			break;
 
 		prGlueInfo = *((P_GLUE_INFO_T *) wiphy_priv(wiphy));

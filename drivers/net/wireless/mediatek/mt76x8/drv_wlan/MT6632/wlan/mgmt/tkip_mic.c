@@ -346,7 +346,7 @@ tkipMicGen(IN PUCHAR pucMickey,
 * \retval NONE
 */
 /*----------------------------------------------------------------------------*/
-static VOID
+static __maybe_unused VOID
 tkipMicEncapsulate(IN PUINT_8 pucDa,
 		   IN PUINT_8 pucSa,
 		   IN UINT_8 ucPriority,

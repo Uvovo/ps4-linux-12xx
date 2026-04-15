@@ -701,7 +701,7 @@ BOOLEAN rsnPerformPolicySelection(IN P_ADAPTER_T prAdapter, IN P_BSS_DESC_T prBs
 	UINT_32 u4PairwiseCipher = 0;
 	UINT_32 u4GroupCipher = 0;
 	UINT_32 u4AkmSuite = 0;
-	P_RSN_INFO_T prBssRsnInfo;
+	P_RSN_INFO_T prBssRsnInfo = NULL;
 	UINT_8 ucBssIndex;
 	BOOLEAN fgIsWpsActive = (BOOLEAN) FALSE;
 
@@ -2672,6 +2672,11 @@ static void rsnApStartSaQueryTimer(IN P_ADAPTER_T prAdapter, IN P_STA_RECORD_T p
 
 }
 
+static VOID rsnApStartSaQueryTimeout(IN P_ADAPTER_T prAdapter, IN ULONG ulParamPtr)
+{
+	rsnApStartSaQueryTimer(prAdapter, (P_STA_RECORD_T) ulParamPtr, ulParamPtr);
+}
+
 /*----------------------------------------------------------------------------*/
 /*!
 *
@@ -2691,7 +2696,7 @@ void rsnApStartSaQuery(IN P_ADAPTER_T prAdapter, IN P_STA_RECORD_T prStaRec)
 	if (prStaRec) {
 		cnmTimerStopTimer(prAdapter, &prStaRec->rPmfCfg.rSAQueryTimer);
 		cnmTimerInitTimer(prAdapter, &prStaRec->rPmfCfg.rSAQueryTimer,
-			(PFN_MGMT_TIMEOUT_FUNC)rsnApStartSaQueryTimer, (ULONG) prStaRec);
+			rsnApStartSaQueryTimeout, (ULONG) prStaRec);
 	}
 
 	if (prStaRec->rPmfCfg.u4SAQueryCount == 0)
@@ -2872,4 +2877,3 @@ void rsnApSaQueryAction(IN P_ADAPTER_T prAdapter, IN P_SW_RFB_T prSwRfb)
 }
 
 #endif /* CFG_SUPPORT_802_11W */
-

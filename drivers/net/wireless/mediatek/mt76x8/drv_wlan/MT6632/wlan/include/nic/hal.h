@@ -107,6 +107,7 @@
 #if defined(_HIF_SDIO)
 #define HAL_MCR_RD(_prAdapter, _u4Offset, _pu4Value) \
 do { \
+	*((PUINT_32) (_pu4Value)) = 0; \
 	if (HAL_TEST_FLAG(_prAdapter, ADAPTER_FLAG_HW_ERR) == FALSE) { \
 		if (_prAdapter->rAcpiState == ACPI_STATE_D3) { \
 			ASSERT(0); \
