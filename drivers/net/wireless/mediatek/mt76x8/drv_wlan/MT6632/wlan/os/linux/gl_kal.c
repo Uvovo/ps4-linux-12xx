@@ -157,7 +157,7 @@ static PUINT_8 apucPatchName[] = {
 	NULL
 };
 
-static PPUINT_8 appucFwNameTable[] = {
+static __maybe_unused PPUINT_8 appucFwNameTable[] = {
 	apucFwName
 };
 #if CFG_ASSERT_DUMP
@@ -1781,9 +1781,9 @@ VOID kalSendCompleteAndAwakeQueue(IN P_GLUE_INFO_T prGlueInfo, IN PVOID pvPacket
 * \note
 */
 /*----------------------------------------------------------------------------*/
-static VOID kalQueryRegistryMacAddr(IN P_GLUE_INFO_T prGlueInfo, OUT PUINT_8 paucMacAddr)
+static __maybe_unused VOID kalQueryRegistryMacAddr(IN P_GLUE_INFO_T prGlueInfo, OUT PUINT_8 paucMacAddr)
 {
-	UINT_8 aucZeroMac[MAC_ADDR_LEN] = { 0, 0, 0, 0, 0, 0 }
+	UINT_8 aucZeroMac[MAC_ADDR_LEN] = { 0, 0, 0, 0, 0, 0 };
 
 	DEBUGFUNC("kalQueryRegistryMacAddr");
 

@@ -148,6 +148,9 @@ static UINT_8 aucOidBuf[4096] = { 0 };
 /* Order is important here because the OIDs should be in order of
  *  increasing value for binary searching.
  */
+__diag_push();
+__diag_ignore_all("-Wcast-function-type-strict",
+		  "Legacy WEXT OID table mixes adapter and glue handlers");
 static WLAN_REQ_ENTRY arWlanOidReqTable[] = {
 #if 0
 	   {(NDIS_OID)rOid,
@@ -434,6 +437,16 @@ static WLAN_REQ_ENTRY arWlanOidReqTable[] = {
 	,
 #endif
 };
+__diag_pop();
+
+static inline PFN_OID_HANDLER_FUNC req_to_oid_handler(PFN_OID_HANDLER_FUNC_REQ handler)
+{
+	__diag_push();
+	__diag_ignore_all("-Wcast-function-type-strict",
+			  "Legacy WEXT OID table stores heterogeneous handler types");
+	return (PFN_OID_HANDLER_FUNC) handler;
+	__diag_pop();
+}
 
 /*******************************************************************************
 *                              F U N C T I O N S
@@ -1687,7 +1700,7 @@ priv_set_ndis(IN struct net_device *prNetDev, IN NDIS_TRANSPORT_STRUCT * prNdisR
 		/* driver core */
 
 		status = kalIoctl(prGlueInfo,
-				  (PFN_OID_HANDLER_FUNC) prWlanReqEntry->pfOidSetHandler,
+				  req_to_oid_handler(prWlanReqEntry->pfOidSetHandler),
 				  prNdisReq->ndisOidContent,
 				  prNdisReq->inNdisOidlength, FALSE, FALSE, TRUE, &u4SetInfoLen);
 	} else {
@@ -1804,7 +1817,7 @@ priv_get_ndis(IN struct net_device *prNetDev, IN NDIS_TRANSPORT_STRUCT * prNdisR
 		/* driver core */
 
 		status = kalIoctl(prGlueInfo,
-				  (PFN_OID_HANDLER_FUNC) prWlanReqEntry->pfOidQueryHandler,
+				  req_to_oid_handler(prWlanReqEntry->pfOidQueryHandler),
 				  prNdisReq->ndisOidContent, prNdisReq->inNdisOidlength, TRUE, TRUE, TRUE, &u4BufLen);
 	} else {
 		DBGLOG(REQ, INFO, "priv_set_ndis(): unsupported OID method:0x%x\n", prWlanReqEntry->eOidMethod);
@@ -2487,7 +2500,7 @@ const struct COEX_REF_TABLE coex_ref_table[] = {
 };
 
 
-static int priv_driver_get_dbg_level(IN struct net_device *prNetDev, IN char *pcCommand, IN int i4TotalLen)
+static __maybe_unused int priv_driver_get_dbg_level(IN struct net_device *prNetDev, IN char *pcCommand, IN int i4TotalLen)
 {
 	P_GLUE_INFO_T prGlueInfo = NULL;
 	INT_32 i4BytesWritten = 0;
@@ -3706,7 +3719,7 @@ static int priv_driver_iso_detect(IN P_GLUE_INFO_T prGlueInfo,
 		return -1;
 
 	/* If all pass, return u4Ret to 0 */
-		return u4Ret;
+	return u4Ret;
 }
 
 /* Private Coex Ctrl Subcmd for Getting Coex Info */
@@ -7276,7 +7289,7 @@ static int priv_driver_get_linkspeed(IN struct net_device *prNetDev, IN char *pc
 
 }				/* priv_driver_get_linkspeed */
 
-int priv_driver_set_band(IN struct net_device *prNetDev, IN char *pcCommand, IN int i4TotalLen)
+static int priv_driver_set_band(IN struct net_device *prNetDev, IN char *pcCommand, IN int i4TotalLen)
 {
 	P_ADAPTER_T prAdapter = NULL;
 	P_GLUE_INFO_T prGlueInfo = NULL;
