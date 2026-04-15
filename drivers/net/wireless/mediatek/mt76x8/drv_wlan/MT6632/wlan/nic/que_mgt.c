@@ -1205,13 +1205,13 @@ VOID qmDetermineStaRecIndex(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInf
 #endif
 }
 
-static P_STA_RECORD_T qmDetermineStaToBeDequeued(IN P_ADAPTER_T prAdapter, IN UINT_32 u4StartStaRecIndex)
+static __maybe_unused P_STA_RECORD_T qmDetermineStaToBeDequeued(IN P_ADAPTER_T prAdapter, IN UINT_32 u4StartStaRecIndex)
 {
 
 	return NULL;
 }
 
-static P_QUE_T qmDequeueStaTxPackets(IN P_ADAPTER_T prAdapter)
+static __maybe_unused P_QUE_T qmDequeueStaTxPackets(IN P_ADAPTER_T prAdapter)
 {
 
 	return NULL;
@@ -1420,7 +1420,7 @@ qmDequeueTxPacketsFromPerTypeQueues(IN P_ADAPTER_T prAdapter, OUT P_QUE_T prQue,
 	DBGLOG(QM, LOUD, "Enter %s (TC = %d, quota = %u)\n", __func__, ucTC, u4CurrentQuota);
 
 	/* Broadcast/Multicast data packets */
-	if ((u4CurrentQuota == 0))
+	if (u4CurrentQuota == 0)
 		return;
 
 	prQM = &prAdapter->rQM;
@@ -2882,7 +2882,7 @@ VOID qmInsertFallWithinReorderPkt(IN P_ADAPTER_T prAdapter, IN P_SW_RFB_T prSwRf
 	else {
 		do {
 			/* Case 1: Terminate. A duplicate packet */
-			if (((prExaminedQueuedSwRfb->u2SSN) == (prSwRfb->u2SSN))) {
+			if (prExaminedQueuedSwRfb->u2SSN == prSwRfb->u2SSN) {
 #if CFG_SUPPORT_RX_AMSDU
 				/* RX reorder for one MSDU in AMSDU issue */
 				/* if middle or last and first is not duplicated, not a duplicat packet */
