@@ -261,14 +261,30 @@ static int ahci_init_one(struct pci_dev *pdev)
 		r_mem->r_bustag = 1;//mem
 		r_mem->r_bushandle = hpriv->mmio;
 
-			ctlr = kzalloc(sizeof(*ctlr), GFP_KERNEL);
-			if (ctlr) {
-				ctlr->r_mem = r_mem;
-				ctlr->dev_id = ps4_xhci_model(pdev) ==
-					       PS4_SB_MODEL_BAIKAL ?
-					       0x90d9104d : 0x90ca104d;
-				ctlr->trace_len = 6;
-				bpcie_sata_phy_init(&pdev->dev, ctlr);
+		ctlr = kzalloc(sizeof(*ctlr), GFP_KERNEL);
+		if (ctlr) {
+			enum ps4_sb_model model = ps4_xhci_model(pdev);
+
+			ctlr->r_mem = r_mem;
+
+			switch (model) {
+			case PS4_SB_MODEL_BAIKAL:
+				ctlr->dev_id = 0x90d9104d;
+				break;
+			case PS4_SB_MODEL_BELIZE:
+				/*
+				 * Restore Belize-specific PHY init instead of
+				 * flattening it into generic non-Baikal path.
+				 */
+				ctlr->dev_id = 0;
+				break;
+			default:
+				ctlr->dev_id = 0x90ca104d;
+				break;
+			}
+
+			ctlr->trace_len = 6;
+			bpcie_sata_phy_init(&pdev->dev, ctlr);
 			kfree(ctlr);
 		}
 		kfree(r_mem);
