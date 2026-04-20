@@ -2,7 +2,8 @@
 
 # PS4-Linux Strawberry Builder
 # Supports two PS4-focused build profiles and two LTO flavors:
-#   server  — headless/services, HZ=250, PREEMPT_VOLUNTARY, performance governor
+#   server  — headless/services, trims BT/audio/input/optical/virt, HZ=250,
+#             PREEMPT_VOLUNTARY, performance governor
 #   general — desktop/gaming, HZ=250, PREEMPT=y, BORE, schedutil/reflex
 #   ThinLTO / FullLTO selectable via lto=ThinLTO or lto=FullLTO
 #
@@ -206,6 +207,151 @@ if [[ ! -f .config ]]; then
         exit 1
     fi
 fi
+
+cfg_has() {
+    local sym="$1"
+    grep -Eq "^(# )?${sym}(=| is not set)" .config
+}
+
+cfg_enable_if_present() {
+    local sym="$1"
+    if cfg_has "$sym"; then
+        scripts/config --enable "$sym"
+    fi
+}
+
+cfg_disable_if_present() {
+    local sym="$1"
+    if cfg_has "$sym"; then
+        scripts/config --disable "$sym"
+    fi
+}
+
+cfg_set_str_if_present() {
+    local sym="$1"
+    local val="$2"
+    if cfg_has "$sym"; then
+        scripts/config --set-str "$sym" "$val"
+    fi
+}
+
+cfg_set_val_if_present() {
+    local sym="$1"
+    local val="$2"
+    if cfg_has "$sym"; then
+        scripts/config --set-val "$sym" "$val"
+    fi
+}
+
+cfg_enable_many() {
+    local sym
+    for sym in "$@"; do
+        cfg_enable_if_present "$sym"
+    done
+}
+
+cfg_disable_many() {
+    local sym
+    for sym in "$@"; do
+        cfg_disable_if_present "$sym"
+    done
+}
+
+preserve_ps4_server_essentials() {
+    echo -e "\e[1;34m[*]\e[0m Preserving PS4 server essentials..."
+    cfg_enable_many \
+        CONFIG_CFG80211 \
+        CONFIG_MAC80211 \
+        CONFIG_MWIFIEX \
+        CONFIG_MWIFIEX_SDIO \
+        CONFIG_NET \
+        CONFIG_NETDEVICES \
+        CONFIG_USB_SUPPORT \
+        CONFIG_USB \
+        CONFIG_USB_XHCI_HCD \
+        CONFIG_USB_XHCI_PCI \
+        CONFIG_USB_XHCI_AEOLIA \
+        CONFIG_USB_STORAGE \
+        CONFIG_USB_UAS \
+        CONFIG_SCSI \
+        CONFIG_BLK_DEV_SD \
+        CONFIG_ATA \
+        CONFIG_SATA_AHCI \
+        CONFIG_EXT4_FS \
+        CONFIG_DRM \
+        CONFIG_DRM_AMDGPU \
+        CONFIG_DRM_AMD_DC
+}
+
+trim_server_dead_weight() {
+    echo -e "\e[1;34m[*]\e[0m Trimming non-server device stacks..."
+
+    # Bluetooth: keep internal Wi-Fi, drop BT side of the combo stack.
+    cfg_disable_many \
+        CONFIG_BT \
+        CONFIG_BT_RFCOMM \
+        CONFIG_BT_BNEP \
+        CONFIG_BT_HIDP \
+        CONFIG_BT_HCIBTSDIO \
+        CONFIG_BT_MRVL \
+        CONFIG_BT_MRVL_SDIO \
+        CONFIG_BT_MTK \
+        CONFIG_BT_MTKSDIO
+
+    # Local/game input junk for headless use.
+    cfg_disable_many \
+        CONFIG_HID_PLAYSTATION \
+        CONFIG_HID_SONY \
+        CONFIG_HID_WIIMOTE \
+        CONFIG_INPUT_JOYSTICK \
+        CONFIG_INPUT_TABLET \
+        CONFIG_INPUT_TOUCHSCREEN \
+        CONFIG_SERIO_I8042 \
+        CONFIG_SERIO_LIBPS2
+
+    # Audio stack: keep display/GPU path, drop local audio.
+    cfg_disable_many \
+        CONFIG_SOUND \
+        CONFIG_SND \
+        CONFIG_SND_HDA_INTEL \
+        CONFIG_SND_HDA_CODEC_HDMI \
+        CONFIG_SND_HDA_CODEC_REALTEK \
+        CONFIG_SND_HDA_GENERIC \
+        CONFIG_SND_HDA \
+        CONFIG_SND_HDA_CORE \
+        CONFIG_SND_HRTIMER \
+        CONFIG_SND_TIMER \
+        CONFIG_SND_PCM \
+        CONFIG_SND_USB \
+        CONFIG_SND_USB_AUDIO
+
+    # Optical/disc stack.
+    cfg_disable_many \
+        CONFIG_CDROM \
+        CONFIG_BLK_DEV_SR \
+        CONFIG_ISO9660_FS \
+        CONFIG_UDF_FS
+
+    # VM / paravirt junk on bare-metal PS4.
+    cfg_disable_many \
+        CONFIG_KVM \
+        CONFIG_KVM_AMD \
+        CONFIG_KVM_INTEL \
+        CONFIG_VIRTIO \
+        CONFIG_VIRTIO_PCI \
+        CONFIG_VIRTIO_PCI_LEGACY \
+        CONFIG_VIRTIO_NET \
+        CONFIG_VIRTIO_BLK \
+        CONFIG_VIRTIO_BALLOON \
+        CONFIG_VIRTIO_INPUT \
+        CONFIG_VIRTIO_MMIO \
+        CONFIG_VHOST_NET \
+        CONFIG_VSOCKETS \
+        CONFIG_XEN \
+        CONFIG_HYPERV \
+        CONFIG_VMWARE_VMCI \
+        CONFIG_VMWARE_VMCI_VMCI
+}
 
 if [[ "$DO_FETCH" == "1" ]]; then
     CONFIG_LINE="$(grep -E '^CONFIG_EXTRA_FIRMWARE=' .config 2>/dev/null || true)"
@@ -479,6 +625,9 @@ if [[ "$DO_BUILD" == "1" ]]; then
         scripts/config --disable CONFIG_DEFAULT_SFQ
         scripts/config --disable CONFIG_DEFAULT_PFIFO_FAST
         scripts/config --set-str CONFIG_DEFAULT_NET_SCH "fq"
+
+        trim_server_dead_weight
+        preserve_ps4_server_essentials
     else
         echo -e "\e[1;34m[*]\e[0m Applying general/gaming profile..."
 
