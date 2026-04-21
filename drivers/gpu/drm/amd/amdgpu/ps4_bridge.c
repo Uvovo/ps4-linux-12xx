@@ -40,9 +40,12 @@
 #include <drm/drm_bridge.h>
 #include <drm/drm_encoder.h>
 
+#include <linux/debugfs.h>
 #include <linux/err.h>
 #include <linux/i2c.h>
 #include <linux/i2c-algo-bit.h>
+#include <linux/seq_file.h>
+#include <linux/uaccess.h>
 
 
 #include "amdgpu.h"
@@ -160,6 +163,15 @@ struct i2c_cmdqueue {
 	struct i2c_cmd_hdr *cmd;
 };
 
+enum ps4_color_profile {
+	PS4_COLOR_PROFILE_DEFAULT = 0,
+	PS4_COLOR_PROFILE_CSC_BYPASS = 1,
+	PS4_COLOR_PROFILE_C420_OFF = 2,
+	PS4_COLOR_PROFILE_CSC_BYPASS_C420_OFF = 3,
+	PS4_COLOR_PROFILE_AVI_OFF = 4,
+	PS4_COLOR_PROFILE_MAX,
+};
+
 struct ps4_bridge {
 	struct drm_connector *connector;
 	struct drm_encoder *encoder;
@@ -170,6 +182,10 @@ struct ps4_bridge {
 	int mode;
 	bool enabled;
 	bool enabling;
+	int color_profile;
+#if IS_ENABLED(CONFIG_DEBUG_FS)
+	struct dentry *debugfs_dir;
+#endif
 };
 
 /* this should really be taken care of by the connector, but that is currently
@@ -387,6 +403,340 @@ static inline struct ps4_bridge *
 	return container_of(bridge, struct ps4_bridge, bridge);
 }
 
+
+static const char *ps4_bridge_color_profile_name(int profile)
+{
+	switch (profile) {
+	case PS4_COLOR_PROFILE_DEFAULT:
+		return "default";
+	case PS4_COLOR_PROFILE_CSC_BYPASS:
+		return "csc_bypass";
+	case PS4_COLOR_PROFILE_C420_OFF:
+		return "c420_off";
+	case PS4_COLOR_PROFILE_CSC_BYPASS_C420_OFF:
+		return "csc_bypass_c420_off";
+	case PS4_COLOR_PROFILE_AVI_OFF:
+		return "avi_off";
+	default:
+		return "unknown";
+	}
+}
+
+static bool ps4_bridge_color_profile_valid(int profile)
+{
+	return profile >= 0 && profile < PS4_COLOR_PROFILE_MAX;
+}
+
+static int ps4_bridge_read_reg_locked(struct ps4_bridge *mn_bridge, u16 addr,
+				      u8 *val)
+{
+	int ret;
+
+	cq_init(&mn_bridge->cq, 4);
+	cq_read(&mn_bridge->cq, addr, 1);
+	ret = cq_exec(&mn_bridge->cq);
+	if (ret < 9)
+		return -EIO;
+
+	*val = mn_bridge->cq.reply.databuf[3];
+	return 0;
+}
+
+static int ps4_bridge_apply_color_profile_71a_locked(struct ps4_bridge *mn_bridge)
+{
+	u8 cscmod = 0xdc;
+	u8 c420set = 0xaa;
+	u8 infena = INFENA_AVIEN;
+
+	switch (mn_bridge->color_profile) {
+	case PS4_COLOR_PROFILE_DEFAULT:
+		break;
+	case PS4_COLOR_PROFILE_CSC_BYPASS:
+		cscmod = 0x00;
+		break;
+	case PS4_COLOR_PROFILE_C420_OFF:
+		c420set = 0x00;
+		break;
+	case PS4_COLOR_PROFILE_CSC_BYPASS_C420_OFF:
+		cscmod = 0x00;
+		c420set = 0x00;
+		break;
+	case PS4_COLOR_PROFILE_AVI_OFF:
+		infena = 0x00;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	cq_init(&mn_bridge->cq, 4);
+	cq_writereg(&mn_bridge->cq, 0x7215, 0x28);
+	cq_mask(&mn_bridge->cq, 0x7216, 0x00, 0x80);
+	cq_writereg(&mn_bridge->cq, 0x7217, mn_bridge->mode);
+	cq_writereg(&mn_bridge->cq, 0x7218, 0x00);
+	cq_writereg(&mn_bridge->cq, CSCMOD, cscmod);
+	cq_writereg(&mn_bridge->cq, C420SET, c420set);
+	cq_writereg(&mn_bridge->cq, TDPCMODE, 0x4a);
+	cq_writereg(&mn_bridge->cq, OUTWSET, 0x00);
+	cq_writereg(&mn_bridge->cq, 0x70c4, 0x08);
+	cq_writereg(&mn_bridge->cq, 0x70c5, 0x08);
+	cq_writereg(&mn_bridge->cq, 0x7096, 0xff);
+	cq_writereg(&mn_bridge->cq, PKTENA, 0x20);
+	cq_writereg(&mn_bridge->cq, INFENA, infena);
+	cq_writereg(&mn_bridge->cq, UPDCTRL,
+			    UPDCTRL_ALLUPD | UPDCTRL_AVIIUPD |
+			    UPDCTRL_CLKUPD | UPDCTRL_VIFUPD |
+			    UPDCTRL_CSCUPD);
+	cq_wait_set(&mn_bridge->cq, 0x7096, 0x80);
+
+	return cq_exec(&mn_bridge->cq) < 0 ? -EIO : 0;
+}
+
+static int ps4_bridge_apply_color_profile_729_locked(struct ps4_bridge *mn_bridge)
+{
+	u8 c420set = 0x00;
+	u8 cscaux = 0x12;
+	u8 infena = 0x60;
+
+	switch (mn_bridge->color_profile) {
+	case PS4_COLOR_PROFILE_DEFAULT:
+		break;
+	case PS4_COLOR_PROFILE_CSC_BYPASS:
+		cscaux = 0x00;
+		break;
+	case PS4_COLOR_PROFILE_C420_OFF:
+		c420set = 0x00;
+		break;
+	case PS4_COLOR_PROFILE_CSC_BYPASS_C420_OFF:
+		cscaux = 0x00;
+		c420set = 0x00;
+		break;
+	case PS4_COLOR_PROFILE_AVI_OFF:
+		infena &= ~INFENA_AVIEN;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	cq_init(&mn_bridge->cq, 4);
+	cq_writereg(&mn_bridge->cq, 0x7225, 0x28);
+	cq_mask(&mn_bridge->cq, 0x7226, 0x00, 0x80);
+	cq_writereg(&mn_bridge->cq, 0x7227, mn_bridge->mode);
+	cq_writereg(&mn_bridge->cq, 0x7228, 0x00);
+	cq_writereg(&mn_bridge->cq, 0x7070, mn_bridge->mode);
+	cq_writereg(&mn_bridge->cq, 0x7071, mn_bridge->mode | 0x80);
+	cq_writereg(&mn_bridge->cq, 0x7072, 0x00);
+	cq_writereg(&mn_bridge->cq, 0x7073, 0x00);
+	cq_writereg(&mn_bridge->cq, 0x7074, 0x00);
+	cq_writereg(&mn_bridge->cq, 0x7075, 0x00);
+	cq_writereg(&mn_bridge->cq, 0x70c4, 0x0a);
+	cq_writereg(&mn_bridge->cq, 0x70c5, 0x0a);
+	cq_writereg(&mn_bridge->cq, C420SET, c420set);
+	cq_writereg(&mn_bridge->cq, 0x70fe, cscaux);
+	cq_writereg(&mn_bridge->cq, OUTWSET, 0x10);
+	cq_writereg(&mn_bridge->cq, 0x10f6, 0xff);
+	cq_writereg(&mn_bridge->cq, PKTENA, 0x20);
+	cq_writereg(&mn_bridge->cq, INFENA, infena);
+	cq_writereg(&mn_bridge->cq, UPDCTRL, 0xd5);
+	cq_wait_set(&mn_bridge->cq, 0x10f6, 0x80);
+
+	return cq_exec(&mn_bridge->cq) < 0 ? -EIO : 0;
+}
+
+static int ps4_bridge_apply_color_profile_locked(struct ps4_bridge *mn_bridge)
+{
+	struct drm_device *dev = mn_bridge->connector->dev;
+	struct pci_dev *pdev = to_pci_dev(dev->dev);
+
+	if (!mn_bridge->mode)
+		return -EINVAL;
+
+	if (pdev->device == PCI_DEVICE_ID_CUH_11XX)
+		return ps4_bridge_apply_color_profile_71a_locked(mn_bridge);
+
+	return ps4_bridge_apply_color_profile_729_locked(mn_bridge);
+}
+
+#if IS_ENABLED(CONFIG_DEBUG_FS)
+static int ps4_bridge_color_regs_show(struct seq_file *m, void *data)
+{
+	struct ps4_bridge *mn_bridge = m->private;
+	struct drm_device *dev = mn_bridge->connector->dev;
+	struct pci_dev *pdev = to_pci_dev(dev->dev);
+	static const u16 regs_71a[] = {
+		CSCMOD, C420SET, OUTWSET, TDPCMODE, UPDCTRL, PKTENA, INFENA,
+		0x7215, 0x7216, 0x7217, 0x7218, 0x70c4, 0x70c5, 0x7096,
+	};
+	static const u16 regs_729[] = {
+		C420SET, OUTWSET, 0x70fe, UPDCTRL, PKTENA, INFENA,
+		0x7225, 0x7226, 0x7227, 0x7228, 0x70c4, 0x70c5, 0x10f6,
+	};
+	const u16 *regs;
+	size_t i, nr_regs;
+
+	seq_printf(m, "profile=%d (%s)\n",
+		   mn_bridge->color_profile,
+		   ps4_bridge_color_profile_name(mn_bridge->color_profile));
+	seq_printf(m, "enabled=%d enabling=%d mode=%d\n",
+		   mn_bridge->enabled, mn_bridge->enabling, mn_bridge->mode);
+	seq_printf(m, "device=0x%04x\n", pdev->device);
+
+	if (pdev->device == PCI_DEVICE_ID_CUH_11XX) {
+		regs = regs_71a;
+		nr_regs = ARRAY_SIZE(regs_71a);
+	} else {
+		regs = regs_729;
+		nr_regs = ARRAY_SIZE(regs_729);
+	}
+
+	mutex_lock(&mn_bridge->mutex);
+	for (i = 0; i < nr_regs; i++) {
+		u8 val;
+		int ret;
+
+		ret = ps4_bridge_read_reg_locked(mn_bridge, regs[i], &val);
+		if (ret)
+			seq_printf(m, "0x%04x = <read fail>\n", regs[i]);
+		else
+			seq_printf(m, "0x%04x = 0x%02x\n", regs[i], val);
+	}
+	mutex_unlock(&mn_bridge->mutex);
+
+	return 0;
+}
+
+static int ps4_bridge_color_regs_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ps4_bridge_color_regs_show, inode->i_private);
+}
+
+static const struct file_operations ps4_bridge_color_regs_fops = {
+	.open = ps4_bridge_color_regs_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+static ssize_t ps4_bridge_color_profile_read(struct file *file,
+					     char __user *ubuf,
+					     size_t len, loff_t *ppos)
+{
+	struct ps4_bridge *mn_bridge = file->private_data;
+	char buf[256];
+	int n;
+
+	n = scnprintf(buf, sizeof(buf),
+		      "current: %d (%s)\n"
+		      "0 default\n"
+		      "1 csc_bypass\n"
+		      "2 c420_off\n"
+		      "3 csc_bypass_c420_off\n"
+		      "4 avi_off\n",
+		      mn_bridge->color_profile,
+		      ps4_bridge_color_profile_name(mn_bridge->color_profile));
+
+	return simple_read_from_buffer(ubuf, len, ppos, buf, n);
+}
+
+static ssize_t ps4_bridge_color_profile_write(struct file *file,
+					      const char __user *ubuf,
+					      size_t len, loff_t *ppos)
+{
+	struct ps4_bridge *mn_bridge = file->private_data;
+	char buf[32];
+	int profile;
+	int ret = 0;
+
+	if (len == 0 || len >= sizeof(buf))
+		return -EINVAL;
+
+	if (copy_from_user(buf, ubuf, len))
+		return -EFAULT;
+	buf[len] = '\0';
+
+	ret = kstrtoint(buf, 0, &profile);
+	if (ret)
+		return ret;
+
+	if (!ps4_bridge_color_profile_valid(profile))
+		return -EINVAL;
+
+	mutex_lock(&mn_bridge->mutex);
+	mn_bridge->color_profile = profile;
+
+	if (mn_bridge->enabled && mn_bridge->mode) {
+		ret = ps4_bridge_apply_color_profile_locked(mn_bridge);
+		if (ret)
+			DRM_ERROR("failed to apply color profile %d (%s)\n",
+				  profile,
+				  ps4_bridge_color_profile_name(profile));
+		else
+			DRM_INFO("applied color profile %d (%s)\n",
+				 profile,
+				 ps4_bridge_color_profile_name(profile));
+	}
+	mutex_unlock(&mn_bridge->mutex);
+
+	return ret ? ret : len;
+}
+
+static const struct file_operations ps4_bridge_color_profile_fops = {
+	.open = simple_open,
+	.read = ps4_bridge_color_profile_read,
+	.write = ps4_bridge_color_profile_write,
+	.llseek = default_llseek,
+};
+
+static void ps4_bridge_debugfs_cleanup(void *data)
+{
+	struct ps4_bridge *mn_bridge = data;
+
+	debugfs_remove_recursive(mn_bridge->debugfs_dir);
+	mn_bridge->debugfs_dir = NULL;
+}
+
+static int ps4_bridge_debugfs_init(struct ps4_bridge *mn_bridge)
+{
+	struct device *dev = mn_bridge->connector->dev->dev;
+	struct dentry *root;
+	int ret;
+
+	if (!mn_bridge->connector->dev->primary ||
+	    !mn_bridge->connector->dev->primary->debugfs_root)
+		return 0;
+
+	root = debugfs_create_dir("ps4_bridge",
+				  mn_bridge->connector->dev->primary->debugfs_root);
+	if (IS_ERR_OR_NULL(root))
+		return 0;
+
+	mn_bridge->debugfs_dir = root;
+
+	if (!debugfs_create_file("color_profile", 0600, root, mn_bridge,
+				 &ps4_bridge_color_profile_fops))
+		goto err;
+
+	if (!debugfs_create_file("color_regs", 0400, root, mn_bridge,
+				 &ps4_bridge_color_regs_fops))
+		goto err;
+
+	ret = devm_add_action_or_reset(dev, ps4_bridge_debugfs_cleanup, mn_bridge);
+	if (ret)
+		return ret;
+
+	return 0;
+
+err:
+	debugfs_remove_recursive(root);
+	mn_bridge->debugfs_dir = NULL;
+	return -ENOMEM;
+}
+#else
+static int ps4_bridge_debugfs_init(struct ps4_bridge *mn_bridge)
+{
+	return 0;
+}
+#endif
+
 static void ps4_bridge_clear_global(void *data)
 {
 	if (g_bridge == data)
@@ -590,6 +940,17 @@ static void ps4_bridge_enable(struct drm_bridge *bridge)
 		if (cq_exec(&mn_bridge->cq) < 0) {
 			DRM_ERROR("Failed to configure ps4-bridge (MN86471A) mode\n");
 		}
+
+		if (mn_bridge->color_profile != PS4_COLOR_PROFILE_DEFAULT) {
+			if (ps4_bridge_apply_color_profile_locked(mn_bridge))
+				DRM_ERROR("Failed to apply color profile %d (%s)\n",
+					  mn_bridge->color_profile,
+					  ps4_bridge_color_profile_name(mn_bridge->color_profile));
+			else
+				DRM_INFO("Applied color profile %d (%s)\n",
+					 mn_bridge->color_profile,
+					 ps4_bridge_color_profile_name(mn_bridge->color_profile));
+		}
 		#if 1
 		// preinit
 		cq_init(&mn_bridge->cq, 4);
@@ -711,6 +1072,17 @@ static void ps4_bridge_enable(struct drm_bridge *bridge)
 		cq_writereg(&mn_bridge->cq, HDCPEN, 0x00);
 		if (cq_exec(&mn_bridge->cq) < 0) {
 			DRM_ERROR("Failed to configure ps4-bridge (MN864729) mode\n");
+		}
+
+		if (mn_bridge->color_profile != PS4_COLOR_PROFILE_DEFAULT) {
+			if (ps4_bridge_apply_color_profile_locked(mn_bridge))
+				DRM_ERROR("Failed to apply color profile %d (%s)\n",
+					  mn_bridge->color_profile,
+					  ps4_bridge_color_profile_name(mn_bridge->color_profile));
+			else
+				DRM_INFO("Applied color profile %d (%s)\n",
+					 mn_bridge->color_profile,
+					 ps4_bridge_color_profile_name(mn_bridge->color_profile));
 		}
 		#if 1
 		// AUDIO preinit
@@ -1101,6 +1473,7 @@ int ps4_bridge_register(struct drm_connector *connector,
 		return ret;
 
 	mutex_init(&mn_bridge->mutex);
+	mn_bridge->color_profile = PS4_COLOR_PROFILE_DEFAULT;
 
 	mn_bridge->encoder = encoder;
 	mn_bridge->connector = connector;
@@ -1125,6 +1498,10 @@ int ps4_bridge_register(struct drm_connector *connector,
 	}
 
 	g_bridge = mn_bridge;
+
+	ret = ps4_bridge_debugfs_init(mn_bridge);
+	if (ret)
+		DRM_WARN("Failed to create ps4_bridge debugfs entries: %d\n", ret);
 
 	return 0;
 }
