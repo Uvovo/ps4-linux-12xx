@@ -100,6 +100,17 @@ jobs:
           fetch-depth: 1
           clean: false
 
+      - name: Fetch private firmware
+        run: |
+          git clone --depth=1 \
+            https://x-access-token:${{ secrets.FW_REPO_PAT }}@github.com/sony-jaguar-devs/firmware.git \
+            /tmp/jaguar-fw
+
+          mkdir -p kernel-source-host/extra_firmware/mrvl
+          cp /tmp/jaguar-fw/sd8797_uapsta.bin kernel-source-host/extra_firmware/mrvl/sd8797_uapsta.bin
+
+          rm -rf /tmp/jaguar-fw
+
       - name: Copy Dockerfile and .dockerignore to workspace root
         run: |
           cp kernel-source-host/Dockerfile ./Dockerfile
