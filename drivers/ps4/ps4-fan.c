@@ -70,11 +70,14 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/hwmon.h>
+#include <linux/jiffies.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/err.h>
 #include "aeolia.h"
 #include "ps4-fan.h"
+
+#define PS4_FAN_CACHE_JIFFIES HZ
 
 /* ============================================================
  * Private Driver State
@@ -84,7 +87,22 @@
  */
 struct ps4_fan_priv {
 	struct mutex lock;
+	long temp_mc;
+	long thresh_mc;
+	long rpm;
+	unsigned long temp_updated;
+	unsigned long thresh_updated;
+	unsigned long rpm_updated;
+	bool temp_valid;
+	bool thresh_valid;
+	bool rpm_valid;
 };
+
+static bool ps4_fan_cache_valid(unsigned long updated, bool valid)
+{
+	return valid &&
+	       time_is_after_jiffies(updated + PS4_FAN_CACHE_JIFFIES);
+}
 
 /* ============================================================
  * icc_read_apu_temp - Read live APU temperature
@@ -268,9 +286,9 @@ static umode_t ps4_fan_is_visible(const void *drvdata,
  * hwmon ops: read
  * ============================================================
  * Dispatches:
- *   temp1_input  → icc_read_apu_temp()      (0x0B/0x01 reply[3])
- *   temp1_crit   → icc_read_fan_threshold() (0x0A/0x07 reply[5])
- *   fan1_input   → icc_read_fan_rpm()       (0x0A/0x08 reply[8:12])
+ *   temp1_input  → cached icc_read_apu_temp()      (0x0B/0x01 reply[3])
+ *   temp1_crit   → cached icc_read_fan_threshold() (0x0A/0x07 reply[5])
+ *   fan1_input   → cached icc_read_fan_rpm()       (0x0A/0x08 reply[8:12])
  */
 static int ps4_fan_read(struct device *dev, enum hwmon_sensor_types type,
 			u32 attr, int channel, long *val)
@@ -285,10 +303,32 @@ static int ps4_fan_read(struct device *dev, enum hwmon_sensor_types type,
 		if (channel != 0) { ret = -EOPNOTSUPP; break; }
 		switch (attr) {
 		case hwmon_temp_input:
+			if (ps4_fan_cache_valid(priv->temp_updated,
+						priv->temp_valid)) {
+				*val = priv->temp_mc;
+				ret = 0;
+				break;
+			}
 			ret = icc_read_apu_temp(val);
+			if (!ret) {
+				priv->temp_mc = *val;
+				priv->temp_updated = jiffies;
+				priv->temp_valid = true;
+			}
 			break;
 		case hwmon_temp_crit:
+			if (ps4_fan_cache_valid(priv->thresh_updated,
+						priv->thresh_valid)) {
+				*val = priv->thresh_mc;
+				ret = 0;
+				break;
+			}
 			ret = icc_read_fan_threshold(val);
+			if (!ret) {
+				priv->thresh_mc = *val;
+				priv->thresh_updated = jiffies;
+				priv->thresh_valid = true;
+			}
 			break;
 		default:
 			ret = -EOPNOTSUPP;
@@ -299,7 +339,17 @@ static int ps4_fan_read(struct device *dev, enum hwmon_sensor_types type,
 			ret = -EOPNOTSUPP;
 			break;
 		}
+		if (ps4_fan_cache_valid(priv->rpm_updated, priv->rpm_valid)) {
+			*val = priv->rpm;
+			ret = 0;
+			break;
+		}
 		ret = icc_read_fan_rpm(val);
+		if (!ret) {
+			priv->rpm = *val;
+			priv->rpm_updated = jiffies;
+			priv->rpm_valid = true;
+		}
 		break;
 	default:
 		ret = -EOPNOTSUPP;
@@ -325,6 +375,8 @@ static int ps4_fan_write(struct device *dev, enum hwmon_sensor_types type,
 
 	mutex_lock(&priv->lock);
 	ret = icc_write_fan_threshold(val);
+	if (!ret)
+		priv->thresh_valid = false;
 	mutex_unlock(&priv->lock);
 
 	return ret;
