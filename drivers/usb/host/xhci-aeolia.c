@@ -139,10 +139,8 @@ static void xhci_aeolia_remove_one(struct pci_dev *dev, int index)
 	usb_remove_hcd(hcd);
 	usb_put_hcd(xhci->shared_hcd);
 
-	// TODO (ps4patches): Does this really need to be disabled?
-	if(dev->device == PCI_DEVICE_ID_SONY_BELIZE_XHCI) {
+	if (hcd->regs)
 		iounmap(hcd->regs);
-	}
 	usb_put_hcd(hcd);
 	axhci->hcd[index] = NULL;
 }
@@ -363,6 +361,7 @@ static int xhci_aeolia_probe(struct pci_dev *dev, const struct pci_device_id *id
 {
 	int idx;
 	int retval;
+	bool ahci_started = false;
 	struct aeolia_xhci *axhci;
 
 	if (apcie_status() == 0)
@@ -371,7 +370,7 @@ static int xhci_aeolia_probe(struct pci_dev *dev, const struct pci_device_id *id
 	if (pci_enable_device(dev) < 0)
 		return -ENODEV;
 
-	axhci = devm_kzalloc(&dev->dev, sizeof(*axhci), GFP_KERNEL);
+	axhci = kzalloc(sizeof(*axhci), GFP_KERNEL);
 	if (!axhci) {
 		retval = -ENOMEM;
 		goto disable_device;
@@ -388,12 +387,15 @@ static int xhci_aeolia_probe(struct pci_dev *dev, const struct pci_device_id *id
 	}
 
 	if (dma_set_mask_and_coherent(&dev->dev, DMA_BIT_MASK(31))) {
-		return -ENODEV;
+		retval = -ENODEV;
+		goto free_irqs;
 	}
 
 	if(dev->device == PCI_DEVICE_ID_SONY_BELIZE_XHCI) {
 		retval = ahci_init_one(dev);
 		dev_dbg(&dev->dev, "ahci_init_one returned %d", retval);
+		if (!retval)
+			ahci_started = true;
 		if (!bus_master) {
 			pci_set_master(dev);
 			bus_master = true;
@@ -414,14 +416,14 @@ static int xhci_aeolia_probe(struct pci_dev *dev, const struct pci_device_id *id
 remove_hcds:
 	while (idx--)
 		xhci_aeolia_remove_one(dev, idx);
+	if (ahci_started)
+		ahci_remove_one(dev);
+free_irqs:
 	apcie_free_irqs(dev->irq, axhci->nr_irqs);
 free_axhci:
-	devm_kfree(&dev->dev, axhci);
+	pci_set_drvdata(dev, NULL);
+	kfree(axhci);
 
-	// TODO (ps4patches): Don't aeolia and baikal also need this?
-	if(dev->device == PCI_DEVICE_ID_SONY_BELIZE_XHCI) {
-		pci_set_drvdata(dev, NULL);
-	}
 disable_device:
 	pci_disable_device(dev);
 	return retval;
@@ -447,7 +449,7 @@ static void xhci_aeolia_remove(struct pci_dev *dev)
 
 	apcie_free_irqs(dev->irq, axhci->nr_irqs);
 
-	// TODO (ps4patches): Belize, remove in ahci commit
+	pci_set_drvdata(dev, NULL);
 	kfree(axhci);
 
 	pci_disable_device(dev);

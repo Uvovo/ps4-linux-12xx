@@ -16,6 +16,7 @@
  * having to get a reference to the device. */
 static struct apcie_dev *icc_sc;
 DEFINE_MUTEX(icc_mutex);
+static DEFINE_MUTEX(icc_ioctl_mutex);
 
 /* The ICC message passing interface seems to be potentially designed to
  * support multiple outstanding requests at once, but the original PS4 OS never
@@ -296,10 +297,12 @@ int apcie_icc_cmd(u8 major, u16 minor, const void *data, u16 length,
 	mutex_lock(&icc_mutex);
 	if (!icc_sc) {
 		pr_err("icc: not ready\n");
-		return -EAGAIN;
+		ret = -EAGAIN;
+		goto out_unlock;
 	}
 	ret = _apcie_icc_cmd(icc_sc, major, minor, data, length, reply, reply_length,
 		       false);
+out_unlock:
 	mutex_unlock(&icc_mutex);
 	return ret;
 }
@@ -424,40 +427,68 @@ static void *ioctl_tmp_buf = NULL;
 
  static long icc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
  {
- 	int ret;
- 	void __user *uap = (void __user *)arg;
- 	switch (cmd) {
- 	case ICC_IOCTL_CMD: {
- 		struct icc_cmd cmd;
- 		int reply_len;
- 		ret = copy_from_user(&cmd, uap, sizeof(cmd));
- 		if (ret) {
- 			ret = -EFAULT;
- 			break;
- 		}
- 		ret = copy_from_user(ioctl_tmp_buf, cmd.data, cmd.length);
- 		if (ret) {
- 			ret = -EFAULT;
- 			break;
- 		}
- 		reply_len = apcie_icc_cmd(cmd.major, cmd.minor, ioctl_tmp_buf,
- 			cmd.length, ioctl_tmp_buf, cmd.reply_length);
- 		if (reply_len < 0) {
- 			ret = reply_len;
- 			break;
- 		}
- 		ret = copy_to_user(cmd.reply, ioctl_tmp_buf, cmd.reply_length);
- 		if (ret) {
- 			ret = -EFAULT;
- 			break;
- 		}
- 		ret = reply_len;
- 		} break;
- 	default:
- 		ret = -ENOENT;
- 		break;
- 	}
- 	return ret;
+	int ret;
+	void __user *uap = (void __user *)arg;
+
+	switch (cmd) {
+	case ICC_IOCTL_CMD: {
+		struct icc_cmd cmd;
+		int reply_len;
+		size_t reply_copy_len;
+
+		ret = copy_from_user(&cmd, uap, sizeof(cmd));
+		if (ret) {
+			ret = -EFAULT;
+			break;
+		}
+		if (cmd.length > ICC_MAX_PAYLOAD) {
+			ret = -E2BIG;
+			break;
+		}
+		if (cmd.reply_length > ICC_MAX_PAYLOAD) {
+			ret = -E2BIG;
+			break;
+		}
+		if (cmd.length && !cmd.data) {
+			ret = -EINVAL;
+			break;
+		}
+		if (cmd.reply_length && !cmd.reply) {
+			ret = -EINVAL;
+			break;
+		}
+
+		mutex_lock(&icc_ioctl_mutex);
+		if (cmd.length &&
+		    copy_from_user(ioctl_tmp_buf, cmd.data, cmd.length)) {
+			ret = -EFAULT;
+			goto out_unlock_ioctl;
+		}
+
+		reply_len = apcie_icc_cmd(cmd.major, cmd.minor, ioctl_tmp_buf,
+			cmd.length, ioctl_tmp_buf, cmd.reply_length);
+		if (reply_len < 0) {
+			ret = reply_len;
+			goto out_unlock_ioctl;
+		}
+
+		reply_copy_len = min_t(size_t, cmd.reply_length, reply_len);
+		if (reply_copy_len &&
+		    copy_to_user(cmd.reply, ioctl_tmp_buf, reply_copy_len)) {
+			ret = -EFAULT;
+			goto out_unlock_ioctl;
+		}
+
+		ret = reply_len;
+out_unlock_ioctl:
+		mutex_unlock(&icc_ioctl_mutex);
+		break;
+	}
+	default:
+		ret = -ENOENT;
+		break;
+	}
+	return ret;
  }
 
  static const struct file_operations icc_fops = {
@@ -485,10 +516,13 @@ int apcie_icc_init(struct apcie_dev *sc)
 				APCIE_RGN_ICC_BASE, APCIE_RGN_ICC_SIZE,
 				"apcie.icc")) {
 		sc_err("icc: failed to request ICC register region\n");
-		return -EBUSY;
+		ret = -EBUSY;
+		goto put_mem_dev;
 	}
 
 	sc->icc.spm_base = pci_resource_start(mem_dev, 5) + APCIE_SPM_ICC_BASE;
+	pci_dev_put(mem_dev);
+	mem_dev = NULL;
 	if (!request_mem_region(sc->icc.spm_base, APCIE_SPM_ICC_SIZE,
 				"spm.icc")) {
 		sc_err("icc: failed to request ICC SPM region\n");
@@ -580,6 +614,9 @@ release_spm:
 release_icc:
 	release_mem_region(pci_resource_start(sc->pdev, 4) +
 			   APCIE_RGN_ICC_BASE, APCIE_RGN_ICC_SIZE);
+put_mem_dev:
+	if (mem_dev)
+		pci_dev_put(mem_dev);
 	return ret;
 }
 
