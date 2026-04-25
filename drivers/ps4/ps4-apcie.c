@@ -174,9 +174,10 @@ static void apcie_irq_msi_compose_msg(struct irq_data *data,
 	{
 		struct apcie_dev *sc = data->chip_data;
 		int i;
+
 		msg->data = data->irq - 1;
 		if (sc) {
-			for (i = 0; i < 100; i++) {
+			for (i = 0; i < ARRAY_SIZE(sc->irq_map); i++) {
 				if (sc->irq_map[i] == data->irq) {
 					msg->data = i;
 					break;
@@ -211,6 +212,9 @@ static int apcie_msi_init(struct irq_domain *domain,
 			 irq_hw_number_t hwirq, msi_alloc_info_t *arg)
 {
 	struct irq_data *data;
+	struct apcie_dev *sc = info->chip_data;
+	int i;
+
 	pr_err("apcie_msi_init(%p, %p, %d, 0x%lx, %p)\n", domain, info, virq, hwirq, arg);
 
 	data = irq_domain_get_irq_data(domain, virq);
@@ -218,16 +222,16 @@ static int apcie_msi_init(struct irq_domain *domain,
 			    handle_edge_irq, NULL, "edge");
 	apcie_msi_calc_mask(data);
 
-	/* virq in irq_map eintragen */
-	struct apcie_dev *sc = info->chip_data;
 	if (sc) {
-		int i;
-		for (i = 0; i < 100; i++) {
+		for (i = 0; i < ARRAY_SIZE(sc->irq_map); i++) {
 			if (sc->irq_map[i] == -1) {
 				sc->irq_map[i] = virq;
-				break;
+				return 0;
 			}
 		}
+
+		pr_err("apcie_msi_init: no free irq_map entry for virq %u\n", virq);
+		return -ENOSPC;
 	}
 
 	return 0;
@@ -236,6 +240,18 @@ static int apcie_msi_init(struct irq_domain *domain,
 static void apcie_msi_free(struct irq_domain *domain,
 			  struct msi_domain_info *info, unsigned int virq)
 {
+	struct apcie_dev *sc = info->chip_data;
+	int i;
+
+	if (sc) {
+		for (i = 0; i < ARRAY_SIZE(sc->irq_map); i++) {
+			if (sc->irq_map[i] == virq) {
+				sc->irq_map[i] = -1;
+				break;
+			}
+		}
+	}
+
 	pr_err("apcie_msi_free(%d)\n", virq);
 }
 
@@ -368,6 +384,10 @@ int apcie_assign_irqs(struct pci_dev *dev, int nvec)
 #endif
 
 	desc = msi_alloc_desc(bare_dev, nvec, NULL);
+	if (!desc) {
+		ret = -ENOMEM;
+		goto fail;
+	}
 
 	info.desc = desc;
 	info.data = sc;
