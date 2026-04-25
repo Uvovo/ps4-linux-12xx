@@ -1,5 +1,3 @@
-#define DEBUG
-
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/wait.h>
@@ -17,6 +15,7 @@
 static struct apcie_dev *icc_sc;
 DEFINE_MUTEX(icc_mutex);
 static DEFINE_MUTEX(icc_ioctl_mutex);
+static bool icc_chrdev_registered;
 
 /* The ICC message passing interface seems to be potentially designed to
  * support multiple outstanding requests at once, but the original PS4 OS never
@@ -594,8 +593,11 @@ int apcie_icc_init(struct apcie_dev *sc)
  	ret = register_chrdev(ICC_MAJOR, "icc", &icc_fops);
  	if (ret) {
  		sc_err("icc: register_chrdev failed: %d\n", ret);
+		kfree(ioctl_tmp_buf);
+		ioctl_tmp_buf = NULL;
  		goto done;
  	}
+	icc_chrdev_registered = true;
  done:
 
 	return 0;
@@ -623,6 +625,12 @@ put_mem_dev:
 void apcie_icc_remove(struct apcie_dev *sc)
 {
 	sc_err("apcie_icc_remove: shouldn't normally be called\n");
+	if (icc_chrdev_registered) {
+		unregister_chrdev(ICC_MAJOR, "icc");
+		icc_chrdev_registered = false;
+	}
+	kfree(ioctl_tmp_buf);
+	ioctl_tmp_buf = NULL;
 	pm_power_off = NULL;
 	icc_pwrbutton_remove(sc);
 	icc_i2c_remove(sc);
