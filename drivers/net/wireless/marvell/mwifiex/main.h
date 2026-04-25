@@ -37,6 +37,10 @@
 #include <linux/of_irq.h>
 #include <linux/workqueue.h>
 
+#ifdef CONFIG_X86_PS4
+#include <asm/ps4.h>
+#endif
+
 #include "decl.h"
 #include "ioctl.h"
 #include "util.h"
@@ -51,6 +55,15 @@ extern bool aggr_ctrl;
 
 struct mwifiex_adapter;
 struct mwifiex_private;
+
+static inline bool mwifiex_is_ps4(void)
+{
+#ifdef CONFIG_X86_PS4
+	return apcie_status() >= 0;
+#else
+	return false;
+#endif
+}
 
 enum {
 	MWIFIEX_ASYNC_CMD,
