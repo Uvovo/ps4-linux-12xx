@@ -138,75 +138,141 @@ static const u8 led_pink_blue[] = {
 };
 
 /* ============================================================
- * ps4_led_set - LED class brightness callback
+ * struct ps4_led_node - LED class device and manual payload pair
+ * @cdev: LED class device exposed to userspace.
+ * @payload: ICC LED payload sent for nonzero brightness values.
+ */
+struct ps4_led_node {
+	struct led_classdev cdev;
+	const u8 *payload;
+};
+
+/* ============================================================
+ * ps4_led_set_blocking - LED class brightness callback
  * ============================================================
  * @led_cdev: The LED class device whose brightness changed.
  * @value:    LED_OFF (0) to turn off, any positive value to enable.
  *
  * Called by the LED subsystem when user-space writes to a
  * /sys/class/leds/ps4:<color>:status/brightness node.
- *
- * Color selection uses strstr() on the led_classdev name. More
- * specific compound names (e.g. "orange_white_blue") are checked
- * before their substrings ("orange", "white", "blue") to avoid
- * false early matches.
- *
  */
-static void ps4_led_set(struct led_classdev *led_cdev,
-			enum led_brightness value)
+static int ps4_led_set_blocking(struct led_classdev *led_cdev,
+				enum led_brightness value)
 {
-	const u8 *data = led_off;
+	struct ps4_led_node *node =
+		container_of(led_cdev, struct ps4_led_node, cdev);
+	const u8 *data = value == LED_OFF ? led_off : node->payload;
 	u8 reply[0x30];
+	int ret;
 
-	if (value != LED_OFF) {
-		if (strstr(led_cdev->name, "orange_white_blue"))
-			data = led_orange_white_blue;
-		else if (strstr(led_cdev->name, "pulsate_orange"))
-			data = led_pulsate_orange;
-		else if (strstr(led_cdev->name, "orange_white"))
-			data = led_orange_white;
-		else if (strstr(led_cdev->name, "orange_blue"))
-			data = led_orange_blue;
-		else if (strstr(led_cdev->name, "white_blue"))
-			data = led_white_blue;
-		else if (strstr(led_cdev->name, "violet_blue"))
-			data = led_violet_blue;
-		else if (strstr(led_cdev->name, "pink_blue"))
-			data = led_pink_blue;
-		else if (strstr(led_cdev->name, "pink"))
-			data = led_pink;
-		else if (strstr(led_cdev->name, "orange"))
-			data = led_orange;
-		else if (strstr(led_cdev->name, "white"))
-			data = led_white;
-		else if (strstr(led_cdev->name, "blue"))
-			data = led_blue;
-	}
+	memset(reply, 0, sizeof(reply));
 
-	apcie_icc_cmd(PS4_LED_ICC_MAJOR, PS4_LED_ICC_MINOR,
-		      (void *)data, PS4_LED_PAYLOAD_LEN,
-		      reply, sizeof(reply));
+	ret = apcie_icc_cmd(PS4_LED_ICC_MAJOR, PS4_LED_ICC_MINOR,
+			    data, PS4_LED_PAYLOAD_LEN,
+			    reply, sizeof(reply));
+	if (ret < 0)
+		return ret;
+
+	return 0;
 }
 
 /* ============================================================
  * LED Class Device Nodes
  * ============================================================
- * One struct led_classdev per color/effect. All share ps4_led_set.
+ * One struct ps4_led_node per color/effect. Each pairs a LED class
+ * node with the manual ICC payload sent for nonzero brightness.
  * Registered via devm_led_classdev_register() in probe().
  * Exposed at /sys/class/leds/ps4:<color>:status/
  */
-static struct led_classdev ps4_led_nodes[] = {
-	{ .name = "ps4:blue:status",              .brightness_set = ps4_led_set },
-	{ .name = "ps4:white:status",             .brightness_set = ps4_led_set },
-	{ .name = "ps4:orange:status",            .brightness_set = ps4_led_set },
-	{ .name = "ps4:orange_blue:status",       .brightness_set = ps4_led_set },
-	{ .name = "ps4:orange_white:status",      .brightness_set = ps4_led_set },
-	{ .name = "ps4:pulsate_orange:status",    .brightness_set = ps4_led_set },
-	{ .name = "ps4:orange_white_blue:status", .brightness_set = ps4_led_set },
-	{ .name = "ps4:white_blue:status",        .brightness_set = ps4_led_set },
-	{ .name = "ps4:violet_blue:status",       .brightness_set = ps4_led_set },
-	{ .name = "ps4:pink:status",              .brightness_set = ps4_led_set },
-	{ .name = "ps4:pink_blue:status",         .brightness_set = ps4_led_set },
+static struct ps4_led_node ps4_led_nodes[] = {
+	{
+		.cdev = {
+			.name = "ps4:blue:status",
+			.max_brightness = 255,
+			.brightness_set_blocking = ps4_led_set_blocking,
+		},
+		.payload = led_blue,
+	},
+	{
+		.cdev = {
+			.name = "ps4:white:status",
+			.max_brightness = 255,
+			.brightness_set_blocking = ps4_led_set_blocking,
+		},
+		.payload = led_white,
+	},
+	{
+		.cdev = {
+			.name = "ps4:orange:status",
+			.max_brightness = 255,
+			.brightness_set_blocking = ps4_led_set_blocking,
+		},
+		.payload = led_orange,
+	},
+	{
+		.cdev = {
+			.name = "ps4:orange_blue:status",
+			.max_brightness = 255,
+			.brightness_set_blocking = ps4_led_set_blocking,
+		},
+		.payload = led_orange_blue,
+	},
+	{
+		.cdev = {
+			.name = "ps4:orange_white:status",
+			.max_brightness = 255,
+			.brightness_set_blocking = ps4_led_set_blocking,
+		},
+		.payload = led_orange_white,
+	},
+	{
+		.cdev = {
+			.name = "ps4:pulsate_orange:status",
+			.max_brightness = 255,
+			.brightness_set_blocking = ps4_led_set_blocking,
+		},
+		.payload = led_pulsate_orange,
+	},
+	{
+		.cdev = {
+			.name = "ps4:orange_white_blue:status",
+			.max_brightness = 255,
+			.brightness_set_blocking = ps4_led_set_blocking,
+		},
+		.payload = led_orange_white_blue,
+	},
+	{
+		.cdev = {
+			.name = "ps4:white_blue:status",
+			.max_brightness = 255,
+			.brightness_set_blocking = ps4_led_set_blocking,
+		},
+		.payload = led_white_blue,
+	},
+	{
+		.cdev = {
+			.name = "ps4:violet_blue:status",
+			.max_brightness = 255,
+			.brightness_set_blocking = ps4_led_set_blocking,
+		},
+		.payload = led_violet_blue,
+	},
+	{
+		.cdev = {
+			.name = "ps4:pink:status",
+			.max_brightness = 255,
+			.brightness_set_blocking = ps4_led_set_blocking,
+		},
+		.payload = led_pink,
+	},
+	{
+		.cdev = {
+			.name = "ps4:pink_blue:status",
+			.max_brightness = 255,
+			.brightness_set_blocking = ps4_led_set_blocking,
+		},
+		.payload = led_pink_blue,
+	},
 };
 
 /* ============================================================
@@ -218,7 +284,7 @@ static int ps4_led_probe(struct platform_device *pdev)
 
 	for (i = 0; i < ARRAY_SIZE(ps4_led_nodes); i++) {
 		ret = devm_led_classdev_register(&pdev->dev,
-						 &ps4_led_nodes[i]);
+						 &ps4_led_nodes[i].cdev);
 		if (ret) {
 			dev_err(&pdev->dev,
 				"failed to register LED node %d: %d\n",
