@@ -1,5 +1,3 @@
-#define DEBUG
-
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
@@ -186,7 +184,7 @@ static void apcie_irq_msi_compose_msg(struct irq_data *data,
 		}
 	}
 
-	pr_err("apcie_irq_msi_compose_msg\n");
+	pr_debug("apcie_irq_msi_compose_msg\n");
 }
 
 static struct irq_chip apcie_msi_controller = {
@@ -215,7 +213,8 @@ static int apcie_msi_init(struct irq_domain *domain,
 	struct apcie_dev *sc = info->chip_data;
 	int i;
 
-	pr_err("apcie_msi_init(%p, %p, %d, 0x%lx, %p)\n", domain, info, virq, hwirq, arg);
+	pr_debug("apcie_msi_init(%p, %p, %d, 0x%lx, %p)\n",
+		 domain, info, virq, hwirq, arg);
 
 	data = irq_domain_get_irq_data(domain, virq);
 	irq_domain_set_info(domain, virq, hwirq, info->chip, info->chip_data,
@@ -252,7 +251,7 @@ static void apcie_msi_free(struct irq_domain *domain,
 		}
 	}
 
-	pr_err("apcie_msi_free(%d)\n", virq);
+	pr_debug("apcie_msi_free(%d)\n", virq);
 }
 
 
@@ -392,18 +391,18 @@ int apcie_assign_irqs(struct pci_dev *dev, int nvec)
 	info.desc = desc;
 	info.data = sc;
 
-	dev_info(&dev->dev, "apcie_assign_irqs(%d) (%ld)\n", nvec, info.hwirq);
+	dev_dbg(&dev->dev, "apcie_assign_irqs(%d) (%ld)\n", nvec, info.hwirq);
 
 	ret = irq_domain_alloc_irqs(sc->irqdomain, nvec, NUMA_NO_NODE, &info);
 	if (ret >= 0) {
-		dev_info(&dev->dev, "irq_domain_alloc_irqs = %x\n", ret);
+		dev_dbg(&dev->dev, "irq_domain_alloc_irqs = %x\n", ret);
 		dev->irq = ret;
 		desc->irq = ret;
 		ret = nvec;
 	}
 
 fail:
-	dev_info(&dev->dev, "apcie_assign_irqs returning %d\n", ret);
+	dev_dbg(&dev->dev, "apcie_assign_irqs returning %d\n", ret);
 	if (sc_dev)
 		pci_dev_put(sc_dev);
 	return ret;
