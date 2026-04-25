@@ -2438,12 +2438,22 @@ int mwifiex_sta_init_cmd(struct mwifiex_private *priv, u8 first_sta)
 			return -1;
 
 		if (priv->bss_type != MWIFIEX_BSS_TYPE_UAP) {
-			/* Enable IEEE PS by default */
-			priv->adapter->ps_mode = MWIFIEX_802_11_POWER_MODE_PSP;
-			ret = mwifiex_send_cmd(priv,
+			if (mwifiex_is_ps4()) {
+				priv->adapter->ps_mode =
+					MWIFIEX_802_11_POWER_MODE_CAM;
+				ret = mwifiex_send_cmd(priv,
+					       HostCmd_CMD_802_11_PS_MODE_ENH,
+					       DIS_AUTO_PS, BITMAP_STA_PS,
+					       NULL, true);
+			} else {
+				/* Enable IEEE PS by default */
+				priv->adapter->ps_mode =
+					MWIFIEX_802_11_POWER_MODE_PSP;
+				ret = mwifiex_send_cmd(priv,
 					       HostCmd_CMD_802_11_PS_MODE_ENH,
 					       EN_AUTO_PS, BITMAP_STA_PS, NULL,
 					       true);
+			}
 			if (ret)
 				return -1;
 		}
