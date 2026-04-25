@@ -70,6 +70,6 @@ int icc_pwrbutton_init(struct apcie_dev *sc)
 void icc_pwrbutton_remove(struct apcie_dev *sc)
 {
 	if (sc->icc.pwrbutton_dev)
-		input_free_device(sc->icc.pwrbutton_dev);
+		input_unregister_device(sc->icc.pwrbutton_dev);
 	sc->icc.pwrbutton_dev = NULL;
 }
