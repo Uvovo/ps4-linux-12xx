@@ -20,6 +20,7 @@ set -euo pipefail
 OUTPUT_DIR="${PWD}/out"
 FIRMWARE_DIR="${PWD}/extra_firmware"
 FIRMWARE_URL_BASE="https://gitlab.com/kernel-firmware/linux-firmware/-/raw/main"
+REQUIRED_PS4_SD8797_FW="mrvl/sd8797_uapsta.bin"
 declare -A FIRMWARE_URL_OVERRIDES
 FIRMWARE_URL_OVERRIDES["mrvl/sd8797_uapsta.bin"]="useCustomFirmware" # Prevent download from upstream; use Orbis/Custom one
 #FIRMWARE_URL_OVERRIDES["mrvl/sd8797_uapsta.bin"]="f87c5b8dd547bcb434d5296ead3748241810c1d8" #sucks too
@@ -42,6 +43,61 @@ lto_label() {
         echo "FullLTO"
     else
         echo "ThinLTO"
+    fi
+}
+
+ensure_extra_firmware_blob() {
+    local blob="$1"
+    local current=""
+
+    if grep -qE '^CONFIG_EXTRA_FIRMWARE=' .config; then
+        current="$(sed -n 's/^CONFIG_EXTRA_FIRMWARE="\(.*\)"/\1/p' .config)"
+    fi
+
+    case " ${current} " in
+        *" ${blob} "*)
+            ;;
+        *)
+            current="${current:+${current} }${blob}"
+            scripts/config --set-str CONFIG_EXTRA_FIRMWARE "${current}"
+            ;;
+    esac
+}
+
+config_has_extra_firmware_blob() {
+    local blob="$1"
+    local current=""
+
+    if grep -qE '^CONFIG_EXTRA_FIRMWARE=' .config; then
+        current="$(sed -n 's/^CONFIG_EXTRA_FIRMWARE="\(.*\)"/\1/p' .config)"
+    fi
+
+    case " ${current} " in
+        *" ${blob} "*)
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+require_custom_firmware_blob() {
+    local blob="$1"
+    local path="${FIRMWARE_DIR}/${blob}"
+
+    if [[ ! -f "${path}" ]]; then
+        echo -e "\e[1;31mERROR:\e[0m Required PS4 custom firmware is missing: ${path}" >&2
+        echo "Place the proprietary SD8797 firmware at ${path}" >&2
+        exit 1
+    fi
+}
+
+validate_extra_firmware_blob() {
+    local blob="$1"
+
+    if ! config_has_extra_firmware_blob "${blob}"; then
+        echo -e "\e[1;31mERROR:\e[0m CONFIG_EXTRA_FIRMWARE must include required PS4 custom firmware: ${blob}" >&2
+        exit 1
     fi
 }
 
@@ -211,6 +267,12 @@ else
     echo -e "\e[1;31mERROR:\e[0m No .config found." >&2
     exit 1
 fi
+
+ensure_extra_firmware_blob "${REQUIRED_PS4_SD8797_FW}"
+require_custom_firmware_blob "${REQUIRED_PS4_SD8797_FW}"
+validate_extra_firmware_blob "${REQUIRED_PS4_SD8797_FW}"
+echo -e "\e[1;34m[*]\e[0m Setting CONFIG_EXTRA_FIRMWARE_DIR=${FIRMWARE_DIR}"
+scripts/config --set-str CONFIG_EXTRA_FIRMWARE_DIR "${FIRMWARE_DIR}"
 
 if [[ "$DO_FETCH" == "1" ]]; then
     CONFIG_LINE="$(grep -E '^CONFIG_EXTRA_FIRMWARE=' .config 2>/dev/null || true)"
@@ -564,15 +626,10 @@ if [[ "$DO_BUILD" == "1" ]]; then
         scripts/config --set-str CONFIG_DEFAULT_NET_SCH "fq_codel"
     fi
 
-    if [[ -d "${FIRMWARE_DIR}" ]] && [[ -n "$(ls -A "${FIRMWARE_DIR}" 2>/dev/null)" ]]; then
-        echo -e "\e[1;34m[*]\e[0m Setting CONFIG_EXTRA_FIRMWARE_DIR=${FIRMWARE_DIR}"
-        scripts/config --set-str CONFIG_EXTRA_FIRMWARE_DIR "${FIRMWARE_DIR}"
-    else
-        echo -e "\e[1;33m[!]\e[0m WARNING: extra_firmware/ missing or empty -- run fetch firmware first." >&2
-    fi
-
     echo -e "\e[1;34m[*]\e[0m Running olddefconfig..."
     make "${MAKE_OPTS[@]}" olddefconfig
+
+    validate_extra_firmware_blob "${REQUIRED_PS4_SD8797_FW}"
 
     echo -e "\e[1;34m[*]\e[0m Running prepare..."
     make "${MAKE_OPTS[@]}" prepare
