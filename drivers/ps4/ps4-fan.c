@@ -374,9 +374,18 @@ static int ps4_fan_write(struct device *dev, enum hwmon_sensor_types type,
 		return -EOPNOTSUPP;
 
 	mutex_lock(&priv->lock);
+	if (ps4_fan_cache_valid(priv->thresh_updated, priv->thresh_valid) &&
+	    priv->thresh_mc == val) {
+		mutex_unlock(&priv->lock);
+		return 0;
+	}
+
 	ret = icc_write_fan_threshold(val);
-	if (!ret)
-		priv->thresh_valid = false;
+	if (!ret) {
+		priv->thresh_mc = val;
+		priv->thresh_updated = jiffies;
+		priv->thresh_valid = true;
+	}
 	mutex_unlock(&priv->lock);
 
 	return ret;
