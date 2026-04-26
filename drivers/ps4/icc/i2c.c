@@ -6,6 +6,7 @@
 
 #define ICC_MAX_READ_DATA 0xff
 #define ICC_MAX_WRITE_DATA 0xf8
+#define ICC_I2C_REPLY_DATA_OFFSET 8
 
 u32 icc_i2c_functionality(struct i2c_adapter *adap);
 int icc_i2c_init(struct apcie_dev *sc);
@@ -42,6 +43,8 @@ static int icc_i2c_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
 	int ret;
 	struct icc_i2c_msg msg;
 	u8 resultbuf[8 + ICC_MAX_READ_DATA];
+	size_t needed;
+	u8 block_len;
 
 	msg.code = 4; /* Don't really know what this is */
 	msg.count = 1;
@@ -93,6 +96,7 @@ static int icc_i2c_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
 	}
 
 	msg.length = msg.cmd.length + 4;
+	memset(resultbuf, 0, sizeof(resultbuf));
 	ret = apcie_icc_cmd(0x10, 0x0, &msg, msg.length, resultbuf,
 		      sizeof(resultbuf));
 	if (ret < 2 || ret > sizeof(resultbuf)) {
@@ -105,19 +109,44 @@ static int icc_i2c_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
 		return -EIO;
 	}
 
-	if (read_write == I2C_SMBUS_READ)
+	if (read_write == I2C_SMBUS_READ) {
 		switch (size) {
+		case I2C_SMBUS_BYTE:
 		case I2C_SMBUS_BYTE_DATA:
-			data->byte = resultbuf[8];
+			needed = ICC_I2C_REPLY_DATA_OFFSET + 1;
+			if (ret < needed)
+				return -EIO;
+			data->byte = resultbuf[ICC_I2C_REPLY_DATA_OFFSET];
 			break;
 		case I2C_SMBUS_WORD_DATA:
-			data->word = resultbuf[8] | (resultbuf[9] << 8);
+			needed = ICC_I2C_REPLY_DATA_OFFSET + 2;
+			if (ret < needed)
+				return -EIO;
+			data->word = resultbuf[ICC_I2C_REPLY_DATA_OFFSET] |
+				     (resultbuf[ICC_I2C_REPLY_DATA_OFFSET + 1] << 8);
 			break;
 		case I2C_SMBUS_I2C_BLOCK_DATA:
-			memcpy(&data->block[1], &resultbuf[8],
-			       data->block[0]);
+			needed = ICC_I2C_REPLY_DATA_OFFSET + 1;
+			if (ret < needed)
+				return -EIO;
+
+			block_len = resultbuf[ICC_I2C_REPLY_DATA_OFFSET];
+			if (block_len > I2C_SMBUS_BLOCK_MAX)
+				return -EIO;
+
+			needed += block_len;
+			if (ret < needed)
+				return -EIO;
+
+			data->block[0] = block_len;
+			memcpy(&data->block[1],
+			       &resultbuf[ICC_I2C_REPLY_DATA_OFFSET + 1],
+			       block_len);
 			break;
+		default:
+			return -EOPNOTSUPP;
 		}
+	}
 
 	return 0;
 }

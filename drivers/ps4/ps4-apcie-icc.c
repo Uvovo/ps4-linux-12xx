@@ -75,7 +75,10 @@ static void dump_message(struct apcie_dev *sc, int offset)
 	sc_err("icc: hdr: [%02x] %02x:%04x unk %x #%d len %d cksum 0x%x\n",
 	       hdr.magic, hdr.major, hdr.minor, hdr.unknown, hdr.cookie,
 	       hdr.length, hdr.checksum);
-	len = min(hdr.length - ICC_HDR_SIZE, ICC_MAX_PAYLOAD);
+	if (hdr.length < ICC_HDR_SIZE || hdr.length > ICC_MAX_SIZE)
+		return;
+
+	len = min_t(int, hdr.length - ICC_HDR_SIZE, ICC_MAX_PAYLOAD);
 	if (len > 0) {
 		sc_err("icc: data:");
 		while (len--)
@@ -104,7 +107,7 @@ static void handle_event(struct apcie_dev *sc, struct icc_message_hdr *msg)
 static void handle_message(struct apcie_dev *sc)
 {
 	u32 rep_empty, rep_full;
-	int off, copy_size;
+	int off, copy_size, payload_len;
 	struct icc_message_hdr msg;
 
 	rep_empty = ioread32(REPLY + BUF_EMPTY);
@@ -117,6 +120,12 @@ static void handle_message(struct apcie_dev *sc)
 	}
 
 	memcpy_fromio(&msg, REPLY, ICC_HDR_SIZE);
+
+	if (msg.length < ICC_HDR_SIZE || msg.length > ICC_MAX_SIZE) {
+		sc_err("icc: message has bad length %d\n", msg.length);
+		dump_message(sc, APCIE_SPM_ICC_REPLY);
+		return;
+	}
 
 	if (msg.minor & ICC_EVENT) {
 		if (msg.magic != ICC_EVENT_MAGIC) {
@@ -144,15 +153,9 @@ static void handle_message(struct apcie_dev *sc)
 			dump_message(sc, APCIE_SPM_ICC_REPLY);
 			return;
 		}
-		if (msg.length < ICC_HDR_SIZE || msg.length > ICC_MAX_SIZE) {
-			spin_unlock(&sc->icc.reply_lock);
-			sc_err("icc: reply has bad length %d\n", msg.length);
-			dump_message(sc, APCIE_SPM_ICC_REPLY);
-			return;
-		}
+		payload_len = msg.length - ICC_HDR_SIZE;
 		off = ICC_HDR_SIZE;
-		copy_size = min(sc->icc.reply_length,
-				(int)(msg.length - off));
+		copy_size = min_t(int, sc->icc.reply_length, payload_len);
 		memcpy_fromio(sc->icc.reply_buffer, REPLY + off, copy_size);
 		off += copy_size;
 		sc->icc.reply_extra_checksum = 0;
