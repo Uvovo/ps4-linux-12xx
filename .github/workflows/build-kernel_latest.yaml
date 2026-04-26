@@ -108,6 +108,7 @@ jobs:
 
           mkdir -p kernel-source-host/extra_firmware/mrvl
           cp /tmp/jaguar-fw/sd8797_uapsta.bin kernel-source-host/extra_firmware/mrvl/sd8797_uapsta.bin
+          test -s kernel-source-host/extra_firmware/mrvl/sd8797_uapsta.bin
 
           rm -rf /tmp/jaguar-fw
 
