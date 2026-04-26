@@ -76,6 +76,20 @@
 #include "gl_wext.h"
 #include "gl_cfg80211.h"
 #include "precomp.h"
+
+#ifdef CONFIG_X86_PS4
+#include <asm/ps4.h>
+#endif
+
+static bool mtk_wifi_is_ps4(void)
+{
+#ifdef CONFIG_X86_PS4
+	return apcie_status() >= 0;
+#else
+	return false;
+#endif
+}
+
 #if CFG_SUPPORT_AGPS_ASSIST
 #include "gl_kal.h"
 #endif
@@ -2379,7 +2393,10 @@ static INT_32 wlanProbe(PVOID pvData, PVOID pvDriverData)
 
 		/* kalMemCopy(&prGlueInfo->rRegInfo, prRegInfo, sizeof(REG_INFO_T)); */
 
-		prRegInfo->u4PowerMode = CFG_INIT_POWER_SAVE_PROF;
+		if (mtk_wifi_is_ps4())
+			prRegInfo->u4PowerMode = ENUM_PSP_CONTINUOUS_ACTIVE;
+		else
+			prRegInfo->u4PowerMode = CFG_INIT_POWER_SAVE_PROF;
 #if 0
 		prRegInfo->fgEnArpFilter = TRUE;
 #endif
