@@ -554,6 +554,7 @@ static int apcie_probe(struct pci_dev *dev, const struct pci_device_id *id) {
 	}
 	sc->pdev = dev;
 	memset(sc->irq_map, -1, sizeof(sc->irq_map));
+	memset(sc->serial_line, -1, sizeof(sc->serial_line));
 	pci_set_drvdata(dev, sc);
 
 	// eMMC ... unused?
@@ -571,17 +572,20 @@ static int apcie_probe(struct pci_dev *dev, const struct pci_device_id *id) {
 
 	if ((ret = apcie_glue_init(sc)) < 0)
 		goto free_bars;
-	// TODO (ps4patches): figure out why this dies a horrible and painful death.
-	//if ((ret = apcie_uart_init(sc)) < 0)
-	//	goto remove_glue;
-	if ((ret = apcie_icc_init(sc)) < 0)
+	if ((ret = apcie_uart_init(sc)) < 0)
 		goto remove_glue;
+	sc->uart_initialized = true;
+	if ((ret = apcie_icc_init(sc)) < 0)
+		goto remove_uart;
 
 	apcie_initialized = true;
 	return 0;
 
-/* remove_uart:
-	apcie_uart_remove(sc); -- Should work, but dead label*/
+remove_uart:
+	if (sc->uart_initialized) {
+		apcie_uart_remove(sc);
+		sc->uart_initialized = false;
+	}
 remove_glue:
 	apcie_glue_remove(sc);
 free_bars:
@@ -602,7 +606,10 @@ static void apcie_remove(struct pci_dev *dev) {
 	sc = pci_get_drvdata(dev);
 
 	apcie_icc_remove(sc);
-	apcie_uart_remove(sc);
+	if (sc->uart_initialized) {
+		apcie_uart_remove(sc);
+		sc->uart_initialized = false;
+	}
 	apcie_glue_remove(sc);
 
 	if (sc->bar0)
@@ -621,7 +628,8 @@ static int apcie_suspend(struct pci_dev *dev, pm_message_t state) {
 	sc = pci_get_drvdata(dev);
 
 	apcie_icc_suspend(sc, state);
-	apcie_uart_suspend(sc, state);
+	if (sc->uart_initialized)
+		apcie_uart_suspend(sc, state);
 	apcie_glue_suspend(sc, state);
 	return 0;
 }
@@ -632,7 +640,8 @@ static int apcie_resume(struct pci_dev *dev) {
 
 	apcie_icc_resume(sc);
 	apcie_glue_resume(sc);
-	apcie_uart_resume(sc);
+	if (sc->uart_initialized)
+		apcie_uart_resume(sc);
 	return 0;
 }
 #endif

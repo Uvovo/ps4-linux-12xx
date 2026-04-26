@@ -149,6 +149,7 @@ struct apcie_dev {
 	int nvec;
 	int irq_map[100];
 	int serial_line[2];
+	bool uart_initialized;
 	struct apcie_icc_dev icc;
 };
 
