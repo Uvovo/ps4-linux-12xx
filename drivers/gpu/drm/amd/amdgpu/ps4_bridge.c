@@ -32,7 +32,6 @@
 #include <asm/ps4.h>
 
 #include <drm/drm_crtc.h>
-#include <drm/drm_probe_helper.h>
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_edid.h>
@@ -40,17 +39,13 @@
 #include <drm/drm_bridge.h>
 #include <drm/drm_encoder.h>
 
-#include <linux/err.h>
-#include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/i2c-algo-bit.h>
 
 
 #include "amdgpu.h"
-#include "amdgpu_i2c.h"
 #include "amdgpu_mode.h"
 #include "atombios_dp.h"
-#include "atombios_encoders.h"
 #include "ObjectID.h"
 
 #define CMD_READ	1, 1
@@ -73,11 +68,9 @@
 #define TSRST_VIFSRST BIT(7)
 
 #define TMONREG 0x7008
-#define TMONREG_MONITOR_PRESENT BIT(3)
-#define TMONREG_MONITOR_POWERED_OFF 0x0c
+#define TMONREG_HPD BIT(3)
 
 #define TDPCMODE 0x7009
-#define PS4_DDC_SEGMENT_ADDR 0x30
 
 
 #define UPDCTRL 0x7011
@@ -133,12 +126,6 @@
 #define PCI_DEVICE_ID_CUH_2XXX 0x9923
 #define PCI_DEVICE_ID_CUH_7XXX 0x9924
 
-#define PS4_BRIDGE_BELIZE_ENABLE_ATTEMPTS 3
-#define PS4_BRIDGE_BELIZE_RETRY_DELAY_MS 120
-
-struct edid *drm_get_edid(struct drm_connector *connector,
- 				 struct i2c_adapter *adapter);
-
 struct i2c_cmd_hdr {
 	u8 major;
 	u8 length;
@@ -172,13 +159,13 @@ struct ps4_bridge {
 	struct mutex mutex;
 
 	int mode;
-	bool enabled;
-	bool enabling;
 };
 
 /* this should really be taken care of by the connector, but that is currently
  * contained/owned by radeon_connector so just use a global for now */
-static struct ps4_bridge *g_bridge;
+static struct ps4_bridge g_bridge = {
+	.mutex = __MUTEX_INITIALIZER(g_bridge.mutex)
+};
 
 /* Function prototype declarations, to fix compilation warnings */
 void ps4_bridge_mode_set(struct drm_bridge *bridge,
@@ -196,11 +183,6 @@ enum drm_mode_status ps4_bridge_mode_valid(struct drm_connector *connector,
 int ps4_bridge_register(struct drm_connector *connector,
 			     struct drm_encoder *encoder);
 
-static int ps4_bridge_read_edid_block(void *data, u8 *buf,
-				       unsigned int block, size_t len);
-static int ps4_bridge_read_edid_block_smbus(void *data, u8 *buf,
-					     unsigned int block, size_t len);
-
 
 static void cq_init(struct i2c_cmdqueue *q, u8 code)
 {
@@ -208,69 +190,6 @@ static void cq_init(struct i2c_cmdqueue *q, u8 code)
 	q->req.count = 0;
 	q->p = q->req.cmdbuf;
 	q->cmd = NULL;
-}
-
-static int ps4_bridge_read_edid_block(void *data, u8 *buf,
-				       unsigned int block, size_t len)
-{
-	struct i2c_adapter *adapter = data;
-	unsigned char start = block * EDID_LENGTH;
-	unsigned char segment = block >> 1;
-	unsigned char xfers = segment ? 3 : 2;
-	int ret, retries = 5;
-
-	do {
-		struct i2c_msg msgs[] = {
-			{
-				.addr = PS4_DDC_SEGMENT_ADDR,
-				.flags = 0,
-				.len = 1,
-				.buf = &segment,
-			}, {
-				.addr = DDC_ADDR,
-				.flags = 0,
-				.len = 1,
-				.buf = &start,
-			}, {
-				.addr = DDC_ADDR,
-				.flags = I2C_M_RD,
-				.len = len,
-				.buf = buf,
-			}
-		};
-
-		ret = i2c_transfer(adapter, &msgs[3 - xfers], xfers);
-		if (ret == -ENXIO)
-			break;
-	} while (ret != xfers && --retries);
-
-	return ret == xfers ? 0 : -1;
-}
-
-static int ps4_bridge_read_edid_block_smbus(void *data, u8 *buf,
-					     unsigned int block, size_t len)
-{
-	struct i2c_adapter *adapter = data;
-	union i2c_smbus_data smbus;
-	unsigned int start = block * EDID_LENGTH;
-	size_t i;
-	int ret;
-
-	if (block > 1)
-		return -1;
-
-	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
-		return -1;
-
-	for (i = 0; i < len; i++) {
-		ret = i2c_smbus_xfer(adapter, DDC_ADDR, 0, I2C_SMBUS_READ,
-				     (u8)(start + i), I2C_SMBUS_BYTE_DATA, &smbus);
-		if (ret < 0)
-			return -1;
-		buf[i] = smbus.byte;
-	}
-
-	return 0;
 }
 
 static void cq_cmd(struct i2c_cmdqueue *q, u8 major, u8 minor)
@@ -391,46 +310,6 @@ static inline struct ps4_bridge *
 	return container_of(bridge, struct ps4_bridge, bridge);
 }
 
-static void ps4_bridge_clear_global(void *data)
-{
-	if (g_bridge == data)
-		g_bridge = NULL;
-}
-
-static void ps4_bridge_retrain_dp(struct ps4_bridge *mn_bridge)
-{
-	struct drm_connector *connector = mn_bridge->connector;
-	struct drm_encoder *encoder = mn_bridge->encoder;
-	struct amdgpu_connector *amdgpu_connector;
-	struct amdgpu_connector_atom_dig *dig_connector;
-	int ret;
-
-	if (!connector || !encoder)
-		return;
-
-	amdgpu_connector = to_amdgpu_connector(connector);
-	if (!amdgpu_connector->ddc_bus ||
-	    !amdgpu_connector->ddc_bus->has_aux)
-		return;
-
-	dig_connector = amdgpu_connector->con_priv;
-	if (dig_connector)
-		dig_connector->dp_sink_type = CONNECTOR_OBJECT_ID_DISPLAYPORT;
-
-	ret = amdgpu_atombios_dp_get_dpcd(amdgpu_connector);
-	DRM_DEBUG_KMS("ps4_bridge: post-enable DPCD ret=%d lanes=%u clock=%u sink_type=%d\n",
-		      ret,
-		      dig_connector ? dig_connector->dp_lane_count : 0,
-		      dig_connector ? dig_connector->dp_clock : 0,
-		      dig_connector ? dig_connector->dp_sink_type : -1);
-
-	if (ret)
-		return;
-
-	DRM_DEBUG_KMS("ps4_bridge: retraining DP link after bridge enable\n");
-	amdgpu_atombios_dp_link_train(encoder, connector);
-}
-
 void ps4_bridge_mode_set(struct drm_bridge *bridge,
 			 const struct drm_display_mode *mode,
 			 const struct drm_display_mode *adjusted_mode)
@@ -452,12 +331,6 @@ static void ps4_bridge_pre_enable(struct drm_bridge *bridge)
 	DRM_DEBUG_KMS("ps4_bridge_pre_enable\n");
 	DRM_DEBUG("Enable ps4_bridge_pre_enable\n");
 	mutex_lock(&mn_bridge->mutex);
-	if (mn_bridge->enabled || mn_bridge->enabling) {
-		DRM_DEBUG_KMS("ps4_bridge_pre_enable (already enabled or enabling, skip)\n");
-		mutex_unlock(&mn_bridge->mutex);
-		return;
-	}
-
 	cq_init(&mn_bridge->cq, 4);
 
 #if 0
@@ -509,7 +382,7 @@ static void ps4_bridge_pre_enable(struct drm_bridge *bridge)
 	/* Reset HDCP */
 	cq_writereg(&mn_bridge->cq, TSRST, TSRST_ENCSRST | TSRST_HDCPSRST);
 	/* Disable HDCP flag */
-	cq_writereg(&mn_bridge->cq, HDCPEN, HDCPEN_ENC_DIS);
+	cq_writereg(&mn_bridge->cq, TSRST, HDCPEN_ENC_DIS);
 	/* HDCP AKE reset */
 	cq_writereg(&mn_bridge->cq, AKESRST, 0xff);
 	/* Wait AKE busy */
@@ -521,137 +394,6 @@ static void ps4_bridge_pre_enable(struct drm_bridge *bridge)
 	mutex_unlock(&mn_bridge->mutex);
 }
 
-static int ps4_bridge_enable_mn864729_video(struct ps4_bridge *mn_bridge,
-					    struct pci_dev *pdev)
-{
-	int ret;
-
-	mutex_lock(&mn_bridge->mutex);
-	cq_init(&mn_bridge->cq, 4);
-	cq_mask(&mn_bridge->cq, 0x6005, 0x01, 0x01);
-	cq_writereg(&mn_bridge->cq, 0x6a03, 0x47);
-
-	/* Wait for DP lane status */
-	cq_wait_set(&mn_bridge->cq, 0x60f8, 0xff);
-	cq_wait_set(&mn_bridge->cq, 0x60f9, 0x01);
-	cq_writereg(&mn_bridge->cq, 0x6a01, 0x4d);
-	cq_wait_set(&mn_bridge->cq, 0x60f9, 0x1a);
-
-	cq_mask(&mn_bridge->cq, 0x1e00, 0x00, 0x21);
-	cq_mask(&mn_bridge->cq, 0x1e02, 0x00, 0x70);
-	// 03 08 01 01 00  2c 01 00
-	//rancido has no delay here vvv
-	//cq_delay(&mn_bridge->cq, 0x012c);
-	cq_writereg(&mn_bridge->cq, 0x6020, 0x00);
-
-	//rancido has no delay here vvv
-	//cq_delay(&mn_bridge->cq, 0x0032);
-	cq_writereg(&mn_bridge->cq, 0x7402, 0x1c);
-	cq_writereg(&mn_bridge->cq, 0x6020, 0x04);
-	cq_writereg(&mn_bridge->cq, TSYSCTRL, TSYSCTRL_HDMI);
-	cq_writereg(&mn_bridge->cq, 0x10c7, 0x38);
-	cq_writereg(&mn_bridge->cq, 0x1e02, 0x88);
-	cq_writereg(&mn_bridge->cq, 0x1e00, 0x66);
-	cq_writereg(&mn_bridge->cq, 0x100c, 0x01);
-	cq_writereg(&mn_bridge->cq, TSYSCTRL, TSYSCTRL_HDMI);
-
-	cq_writereg(&mn_bridge->cq, 0x7009, 0x00);
-	cq_writereg(&mn_bridge->cq, 0x7040, 0x42);
-	cq_writereg(&mn_bridge->cq, 0x7225, 0x28);
-	cq_writereg(&mn_bridge->cq, 0x7227, mn_bridge->mode);
-	cq_writereg(&mn_bridge->cq, 0x7228, 0x00);
-	cq_writereg(&mn_bridge->cq, 0x7070, mn_bridge->mode);
-	cq_writereg(&mn_bridge->cq, 0x7071, mn_bridge->mode | 0x80);
-	cq_writereg(&mn_bridge->cq, 0x7072, 0x00);
-	cq_writereg(&mn_bridge->cq, 0x7073, 0x00);
-	cq_writereg(&mn_bridge->cq, 0x7074, 0x00);
-	cq_writereg(&mn_bridge->cq, 0x7075, 0x00);
-	cq_writereg(&mn_bridge->cq, 0x70c4, 0x0a);
-	cq_writereg(&mn_bridge->cq, 0x70c5, 0x0a);
-	cq_writereg(&mn_bridge->cq, 0x70c2, 0x00);
-	cq_writereg(&mn_bridge->cq, 0x70fe, 0x12);
-	cq_writereg(&mn_bridge->cq, 0x70c3, 0x10);
-
-	if (pdev->device == PCI_DEVICE_ID_CUH_12XX) {
-		/* newer ps4 phats need here 0x03 idk why. */
-		cq_writereg(&mn_bridge->cq, 0x10c5, 0x03);
-	} else {
-		cq_writereg(&mn_bridge->cq, 0x10c5, 0x00);
-	}
-
-	cq_writereg(&mn_bridge->cq, 0x10f6, 0xff);
-	cq_writereg(&mn_bridge->cq, 0x7202, 0x20);
-	cq_writereg(&mn_bridge->cq, 0x7203, 0x60);
-	cq_writereg(&mn_bridge->cq, 0x7011, 0xd5);
-	//cq_writereg(&mn_bridge->cq, 0x7a00, 0x0e);
-
-	cq_wait_set(&mn_bridge->cq, 0x10f6, 0x80);
-	cq_mask(&mn_bridge->cq, 0x7226, 0x00, 0x80);
-	cq_mask(&mn_bridge->cq, 0x7228, 0x00, 0xFF);
-	// rancido has no delay here vvv
-	//cq_delay(&mn_bridge->cq, 0x012c);
-	cq_writereg(&mn_bridge->cq, 0x7204, 0x40);
-	cq_wait_clear(&mn_bridge->cq, 0x7204, 0x40);
-	cq_writereg(&mn_bridge->cq, 0x7a8b, 0x05);
-	cq_mask(&mn_bridge->cq, 0x1e02, 0x70, 0x70);
-	cq_mask(&mn_bridge->cq, 0x1034, 0x02, 0x02);
-	cq_mask(&mn_bridge->cq, 0x1e00, 0x01, 0x01);
-	cq_writereg(&mn_bridge->cq, VMUTECNT, VMUTECNT_LINEWIDTH_90);
-	cq_writereg(&mn_bridge->cq, HDCPEN, 0x00);
-	ret = cq_exec(&mn_bridge->cq);
-	if (ret < 0)
-		DRM_ERROR("Failed to configure ps4-bridge (MN864729) mode\n");
-
-	mutex_unlock(&mn_bridge->mutex);
-
-	return ret < 0 ? ret : 0;
-}
-
-static void ps4_bridge_enable_mn864729_audio(struct ps4_bridge *mn_bridge)
-{
-	mutex_lock(&mn_bridge->mutex);
-
-	// AUDIO preinit
-	cq_init(&mn_bridge->cq, 4);
-	cq_writereg(&mn_bridge->cq,0x70aa, 0x00);
-	cq_writereg(&mn_bridge->cq,0x70af, 0x07);
-	cq_writereg(&mn_bridge->cq,0x70a9, 0x5a);
-
-	cq_mask(&mn_bridge->cq,0x70af, 0x06, 0x06);
-	cq_mask(&mn_bridge->cq,0x70af, 0x02, 0x0f);
-	cq_mask(&mn_bridge->cq,0x70b3, 0x02, 0x0f);
-	cq_mask(&mn_bridge->cq,0x70ae, 0x80, 0xe0);
-	cq_mask(&mn_bridge->cq,0x70ae, 0x01, 0x07);
-	cq_mask(&mn_bridge->cq,0x70ac, 0x01, 0x21);
-	cq_mask(&mn_bridge->cq,0x70ab, 0x80, 0x88);
-	cq_mask(&mn_bridge->cq,0x70a9, 0x01, 0x01);
-	if (cq_exec(&mn_bridge->cq) < 0)
-		DRM_ERROR("failed to run enable hdmi audio seq. 0");
-
-	cq_init(&mn_bridge->cq, 4);
-	cq_writereg(&mn_bridge->cq,0x70b0, 0x01);
-	cq_mask(&mn_bridge->cq,0x70b0, 0x00, 0xff);
-	cq_mask(&mn_bridge->cq,0x70b1, 0x79, 0xff);
-	cq_mask(&mn_bridge->cq,0x70b2, 0x00, 0xff);
-	cq_mask(&mn_bridge->cq,0x70b3, 0x02, 0xff);
-	cq_mask(&mn_bridge->cq,0x70b4, 0x0b, 0x0f);
-	cq_mask(&mn_bridge->cq,0x70b5, 0x00, 0xff);
-	cq_mask(&mn_bridge->cq,0x70b6, 0x00, 0xff);
-	cq_writereg(&mn_bridge->cq,0x10f6, 0xff);
-	cq_writereg(&mn_bridge->cq,0x7011, 0xa2);
-	cq_wait_set(&mn_bridge->cq,0x10f6, 0xa2);
-	cq_mask(&mn_bridge->cq,0x7267, 0x00, 0xff);
-	cq_writereg(&mn_bridge->cq,0x7204, 0x10);
-	cq_wait_clear(&mn_bridge->cq,0x7204, 0x10);
-	cq_writereg(&mn_bridge->cq,0x10f6, 0xff);
-	cq_mask(&mn_bridge->cq,0x7203, 0x10, 0x10);
-	cq_writereg(&mn_bridge->cq,0x70a8, 0xc0);
-	if (cq_exec(&mn_bridge->cq) < 0)
-		DRM_ERROR("failed to run enable hdmi audio seq. 1");
-
-	mutex_unlock(&mn_bridge->mutex);
-}
-
 static void ps4_bridge_enable(struct drm_bridge *bridge)
 {
 	struct ps4_bridge *mn_bridge = bridge_to_ps4_bridge(bridge);
@@ -659,36 +401,23 @@ static void ps4_bridge_enable(struct drm_bridge *bridge)
 	struct drm_device *dev = connector->dev;
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
 	u8 dp[3];
-	bool is_mn864729 = pdev->device != PCI_DEVICE_ID_CUH_11XX;
-	bool success = false;
-	int ret;
-	unsigned int attempt;
 
 	DRM_DEBUG("Enable PS4_BRIDGE_ENABLE\n");
-	mutex_lock(&mn_bridge->mutex);
-	if (mn_bridge->enabled && !is_mn864729) {
-		DRM_DEBUG_KMS("ps4_bridge_enable (already enabled, skip)\n");
-		mutex_unlock(&mn_bridge->mutex);
-		return;
-	}
-	mn_bridge->enabling = true;
-	mutex_unlock(&mn_bridge->mutex);
-
 	if (!mn_bridge->mode) {
 		DRM_ERROR("mode not available\n");
-		goto out;
+		return;
 	}
 
-	if (pdev->vendor != PCI_VENDOR_ID_ATI) {
+	if(pdev->vendor != PCI_VENDOR_ID_ATI) {
 		DRM_ERROR("Invalid vendor: %04x", pdev->vendor);
-		goto out;
+		return;
 	}
 
 	DRM_DEBUG_KMS("ps4_bridge_enable (mode: %d)\n", mn_bridge->mode);
 
 	/* Here come the dragons */
 
-	if (!is_mn864729)
+	if(pdev->device == PCI_DEVICE_ID_CUH_11XX)
 	{
 		/* Panasonic MN86471A */
 		mutex_lock(&mn_bridge->mutex);
@@ -699,7 +428,7 @@ static void ps4_bridge_enable(struct drm_bridge *bridge)
 		if (cq_exec(&mn_bridge->cq) < 11) {
 			mutex_unlock(&mn_bridge->mutex);
 			DRM_ERROR("could not read DP status");
-			goto out;
+			return;
 		}
 		memcpy(dp, &mn_bridge->cq.reply.databuf[3], 3);
 
@@ -759,11 +488,8 @@ static void ps4_bridge_enable(struct drm_bridge *bridge)
 		cq_writereg(&mn_bridge->cq, 0x7020, 0x21);
 
 		cq_writereg(&mn_bridge->cq, VMUTECNT, VMUTECNT_LINEWIDTH_90);
-		ret = cq_exec(&mn_bridge->cq);
-		if (ret < 0) {
+		if (cq_exec(&mn_bridge->cq) < 0) {
 			DRM_ERROR("Failed to configure ps4-bridge (MN86471A) mode\n");
-		} else {
-			success = true;
 		}
 		#if 1
 		// preinit
@@ -812,60 +538,132 @@ static void ps4_bridge_enable(struct drm_bridge *bridge)
 	else
 	{
 		/* Panasonic MN864729 */
-		/*
-		 * A successful video programming pass only means the bridge
-		 * command queue completed. The retrain helper returns void, so
-		 * retry the bounded Belize attempts unconditionally here.
-		 */
-		for (attempt = 1; attempt <= PS4_BRIDGE_BELIZE_ENABLE_ATTEMPTS;
-		     attempt++) {
-			DRM_DEBUG_KMS("ps4_bridge_enable: Belize attempt %u/%u\n",
-				      attempt,
-				      PS4_BRIDGE_BELIZE_ENABLE_ATTEMPTS);
+		mutex_lock(&mn_bridge->mutex);
+		cq_init(&mn_bridge->cq, 4);
+		cq_mask(&mn_bridge->cq, 0x6005, 0x01, 0x01);
+		cq_writereg(&mn_bridge->cq, 0x6a03, 0x47);
 
-			ret = ps4_bridge_enable_mn864729_video(mn_bridge, pdev);
-			if (ret) {
-				if (attempt < PS4_BRIDGE_BELIZE_ENABLE_ATTEMPTS)
-					msleep(PS4_BRIDGE_BELIZE_RETRY_DELAY_MS);
-				continue;
-			}
+		/* Wait for DP lane status */
+		cq_wait_set(&mn_bridge->cq, 0x60f8, 0xff);
+		cq_wait_set(&mn_bridge->cq, 0x60f9, 0x01);
+		cq_writereg(&mn_bridge->cq, 0x6a01, 0x4d);
+		cq_wait_set(&mn_bridge->cq, 0x60f9, 0x1a);
 
-			success = true;
-			ps4_bridge_retrain_dp(mn_bridge);
+		cq_mask(&mn_bridge->cq, 0x1e00, 0x00, 0x21);
+		cq_mask(&mn_bridge->cq, 0x1e02, 0x00, 0x70);
+		// 03 08 01 01 00  2c 01 00
+		//rancido has no delay here vvv
+		//cq_delay(&mn_bridge->cq, 0x012c);
+		cq_writereg(&mn_bridge->cq, 0x6020, 0x00);
 
-			if (attempt < PS4_BRIDGE_BELIZE_ENABLE_ATTEMPTS)
-				msleep(PS4_BRIDGE_BELIZE_RETRY_DELAY_MS);
+		//rancido has no delay here vvv
+		//cq_delay(&mn_bridge->cq, 0x0032);
+		cq_writereg(&mn_bridge->cq, 0x7402, 0x1c);
+		cq_writereg(&mn_bridge->cq, 0x6020, 0x04);
+		cq_writereg(&mn_bridge->cq, TSYSCTRL, TSYSCTRL_HDMI);
+		cq_writereg(&mn_bridge->cq, 0x10c7, 0x38);
+		cq_writereg(&mn_bridge->cq, 0x1e02, 0x88);
+		cq_writereg(&mn_bridge->cq, 0x1e00, 0x66);
+		cq_writereg(&mn_bridge->cq, 0x100c, 0x01);
+		cq_writereg(&mn_bridge->cq, TSYSCTRL, TSYSCTRL_HDMI);
+
+		cq_writereg(&mn_bridge->cq, 0x7009, 0x00);
+		cq_writereg(&mn_bridge->cq, 0x7040, 0x42);
+		cq_writereg(&mn_bridge->cq, 0x7225, 0x28);
+		cq_writereg(&mn_bridge->cq, 0x7227, mn_bridge->mode);
+		cq_writereg(&mn_bridge->cq, 0x7228, 0x00);
+		cq_writereg(&mn_bridge->cq, 0x7070, mn_bridge->mode);
+		cq_writereg(&mn_bridge->cq, 0x7071, mn_bridge->mode | 0x80);
+		cq_writereg(&mn_bridge->cq, 0x7072, 0x00);
+		cq_writereg(&mn_bridge->cq, 0x7073, 0x00);
+		cq_writereg(&mn_bridge->cq, 0x7074, 0x00);
+		cq_writereg(&mn_bridge->cq, 0x7075, 0x00);
+		cq_writereg(&mn_bridge->cq, 0x70c4, 0x0a);
+		cq_writereg(&mn_bridge->cq, 0x70c5, 0x0a);
+		cq_writereg(&mn_bridge->cq, 0x70c2, 0x00);
+		cq_writereg(&mn_bridge->cq, 0x70fe, 0x12);
+		cq_writereg(&mn_bridge->cq, 0x70c3, 0x10);
+
+		if(pdev->device == PCI_DEVICE_ID_CUH_12XX) {
+			/* newer ps4 phats need here 0x03 idk why. */
+			cq_writereg(&mn_bridge->cq, 0x10c5, 0x03);
+		} else {
+			cq_writereg(&mn_bridge->cq, 0x10c5, 0x00);
 		}
 
-		if (success)
-			ps4_bridge_enable_mn864729_audio(mn_bridge);
+		cq_writereg(&mn_bridge->cq, 0x10f6, 0xff);
+		cq_writereg(&mn_bridge->cq, 0x7202, 0x20);
+		cq_writereg(&mn_bridge->cq, 0x7203, 0x60);
+		cq_writereg(&mn_bridge->cq, 0x7011, 0xd5);
+		//cq_writereg(&mn_bridge->cq, 0x7a00, 0x0e);
+
+		cq_wait_set(&mn_bridge->cq, 0x10f6, 0x80);
+		cq_mask(&mn_bridge->cq, 0x7226, 0x00, 0x80);
+		cq_mask(&mn_bridge->cq, 0x7228, 0x00, 0xFF);
+		// rancido has no delay here vvv
+		//cq_delay(&mn_bridge->cq, 0x012c);
+		cq_writereg(&mn_bridge->cq, 0x7204, 0x40);
+		cq_wait_clear(&mn_bridge->cq, 0x7204, 0x40);
+		cq_writereg(&mn_bridge->cq, 0x7a8b, 0x05);
+		cq_mask(&mn_bridge->cq, 0x1e02, 0x70, 0x70);
+		cq_mask(&mn_bridge->cq, 0x1034, 0x02, 0x02);
+		cq_mask(&mn_bridge->cq, 0x1e00, 0x01, 0x01);
+		cq_writereg(&mn_bridge->cq, VMUTECNT, VMUTECNT_LINEWIDTH_90);
+		cq_writereg(&mn_bridge->cq, HDCPEN, 0x00);
+		if (cq_exec(&mn_bridge->cq) < 0) {
+			DRM_ERROR("Failed to configure ps4-bridge (MN864729) mode\n");
+		}
+		#if 1
+		// AUDIO preinit
+		cq_init(&mn_bridge->cq, 4);
+		cq_writereg(&mn_bridge->cq,0x70aa, 0x00);
+		cq_writereg(&mn_bridge->cq,0x70af, 0x07);
+		cq_writereg(&mn_bridge->cq,0x70a9, 0x5a);
+
+		cq_mask(&mn_bridge->cq,0x70af, 0x06, 0x06);
+		cq_mask(&mn_bridge->cq,0x70af, 0x02, 0x0f);
+		cq_mask(&mn_bridge->cq,0x70b3, 0x02, 0x0f);
+		cq_mask(&mn_bridge->cq,0x70ae, 0x80, 0xe0);
+		cq_mask(&mn_bridge->cq,0x70ae, 0x01, 0x07);
+		cq_mask(&mn_bridge->cq,0x70ac, 0x01, 0x21);
+		cq_mask(&mn_bridge->cq,0x70ab, 0x80, 0x88);
+		cq_mask(&mn_bridge->cq,0x70a9, 0x01, 0x01);
+		if (cq_exec(&mn_bridge->cq) < 0) {
+				DRM_ERROR("failed to run enable hdmi audio seq. 0");
+		}
+
+		cq_init(&mn_bridge->cq, 4);
+		cq_writereg(&mn_bridge->cq,0x70b0, 0x01);
+		cq_mask(&mn_bridge->cq,0x70b0, 0x00, 0xff);
+		cq_mask(&mn_bridge->cq,0x70b1, 0x79, 0xff);
+		cq_mask(&mn_bridge->cq,0x70b2, 0x00, 0xff);
+		cq_mask(&mn_bridge->cq,0x70b3, 0x02, 0xff);
+		cq_mask(&mn_bridge->cq,0x70b4, 0x0b, 0x0f);
+		cq_mask(&mn_bridge->cq,0x70b5, 0x00, 0xff);
+		cq_mask(&mn_bridge->cq,0x70b6, 0x00, 0xff);
+		cq_writereg(&mn_bridge->cq,0x10f6, 0xff);
+		cq_writereg(&mn_bridge->cq,0x7011, 0xa2);
+		cq_wait_set(&mn_bridge->cq,0x10f6, 0xa2);
+		cq_mask(&mn_bridge->cq,0x7267, 0x00, 0xff);
+		cq_writereg(&mn_bridge->cq,0x7204, 0x10);
+		cq_wait_clear(&mn_bridge->cq,0x7204, 0x10);
+		cq_writereg(&mn_bridge->cq,0x10f6, 0xff);
+		cq_mask(&mn_bridge->cq,0x7203, 0x10, 0x10);
+		cq_writereg(&mn_bridge->cq,0x70a8, 0xc0);
+		if (cq_exec(&mn_bridge->cq) < 0) {
+				DRM_ERROR("failed to run enable hdmi audio seq. 1");
+		}
+		#endif
+		mutex_unlock(&mn_bridge->mutex);
 	}
-
-out:
-	mutex_lock(&mn_bridge->mutex);
-	mn_bridge->enabled = success;
-	mn_bridge->enabling = false;
-	mutex_unlock(&mn_bridge->mutex);
-
 }
 
 static void ps4_bridge_disable(struct drm_bridge *bridge)
 {
 	struct ps4_bridge *mn_bridge = bridge_to_ps4_bridge(bridge);
-
-	mutex_lock(&mn_bridge->mutex);
-	if (!mn_bridge->enabled) {
-		mn_bridge->enabled = false;
-		mn_bridge->enabling = false;
-		DRM_DEBUG_KMS("ps4_bridge_disable (already disabled, skip)\n");
-		mutex_unlock(&mn_bridge->mutex);
-		return;
-	}
-
-	mn_bridge->enabled = false;
-	mn_bridge->enabling = false;
 	DRM_DEBUG_KMS("ps4_bridge_disable\n");
 
+	mutex_lock(&mn_bridge->mutex);
 	cq_init(&mn_bridge->cq, 4);
 	cq_writereg(&mn_bridge->cq, VMUTECNT, VMUTECNT_LINEWIDTH_90 | VMUTECNT_VMUTE_MUTE_NORMAL);
 	cq_writereg(&mn_bridge->cq, INFENA, 0x00);
@@ -877,32 +675,8 @@ static void ps4_bridge_disable(struct drm_bridge *bridge)
 
 static void ps4_bridge_post_disable(struct drm_bridge *bridge)
 {
-	struct ps4_bridge *mn_bridge = bridge_to_ps4_bridge(bridge);
-
+	/* struct ps4_bridge *mn_bridge = bridge_to_ps4_bridge(bridge); */
 	DRM_DEBUG_KMS("ps4_bridge_post_disable\n");
-
-	mutex_lock(&mn_bridge->mutex);
-	mn_bridge->enabled = false;
-	mn_bridge->enabling = false;
-	if (!mn_bridge->mode) {
-		mutex_unlock(&mn_bridge->mutex);
-		return;
-	}
-
-	cq_init(&mn_bridge->cq, 4);
-	/*
-	 * Return the bridge to an idle state so monitor presence detection via
-	 * TMONREG is reliable across repeated unplug/replug cycles.
-	 */
-	cq_writereg(&mn_bridge->cq, TSRST,
-		   TSRST_AVCSRST | TSRST_ENCSRST | TSRST_FIFOSRST |
-		   TSRST_CCSRST | TSRST_HDCPSRST | TSRST_AUDSRST |
-		   TSRST_VIFSRST);
-	if (cq_exec(&mn_bridge->cq) < 0)
-		DRM_ERROR("Failed to reset bridge in post_disable\n");
-
-	mn_bridge->mode = 0;
-	mutex_unlock(&mn_bridge->mutex);
 }
 
 /* Hardcoded modes, since we don't really know how to do custom modes yet.
@@ -940,7 +714,7 @@ static const struct drm_display_mode mode_1080p = {
  * Try setting a TYPE_PREFFERED mode
  */
 /* 63 - 1920x1080@120Hz */
-static const struct drm_display_mode mode_1080p120 __maybe_unused = {
+static const struct drm_display_mode mode_1080p120 = {
 	DRM_MODE("1920x1080", DRM_MODE_TYPE_DRIVER, 297000, 1920, 2008,
 			2052, 2200, 0, 1080, 1084, 1089, 1125, 0,
 		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
@@ -950,136 +724,37 @@ static const struct drm_display_mode mode_1080p120 __maybe_unused = {
 int ps4_bridge_get_modes(struct drm_connector *connector)
 {
 	struct drm_device *dev = connector->dev;
-	struct amdgpu_connector *amdgpu_connector = to_amdgpu_connector(connector);
-	struct amdgpu_connector_atom_dig *dig_connector = amdgpu_connector->con_priv;
-	struct drm_encoder *encoder;
-	const struct drm_edid *drm_edid = NULL;
-	const struct edid *raw_edid;
-	struct i2c_adapter *ddc;
 	struct drm_display_mode *newmode;
-	int dpcd_ret = -ENODEV;
-	int count = 0;
-
 	DRM_DEBUG_KMS("ps4_bridge_get_modes\n");
 
-	kfree(amdgpu_connector->edid);
-	amdgpu_connector->edid = NULL;
-	drm_connector_update_edid_property(connector, NULL);
-
-	if (!amdgpu_connector->ddc_bus) {
-		DRM_DEBUG_KMS("ps4_bridge_get_modes: no DDC bus, using fallback modes\n");
-		goto fallback_modes;
-	}
-
-	if (amdgpu_connector->router.ddc_valid) {
-		DRM_DEBUG_KMS("ps4_bridge_get_modes: selecting router DDC port\n");
-		amdgpu_i2c_router_select_ddc_port(amdgpu_connector);
-	}
-
-	if (dig_connector)
-		dig_connector->dp_sink_type = CONNECTOR_OBJECT_ID_DISPLAYPORT;
-
-	if (amdgpu_connector->ddc_bus && amdgpu_connector->ddc_bus->has_aux) {
-		dpcd_ret = amdgpu_atombios_dp_get_dpcd(amdgpu_connector);
-		DRM_DEBUG_KMS("ps4_bridge_get_modes: DPCD ret=%d sink_type=%d lanes=%u clock=%u\n",
-			      dpcd_ret,
-			      dig_connector ? dig_connector->dp_sink_type : -1,
-			      dig_connector ? dig_connector->dp_lane_count : 0,
-			      dig_connector ? dig_connector->dp_clock : 0);
-	}
-
-	drm_connector_for_each_possible_encoder(connector, encoder) {
-		amdgpu_atombios_encoder_setup_ext_encoder_ddc(encoder);
-		break;
-	}
-
-	if (amdgpu_connector->ddc_bus->has_aux) {
-		ddc = &amdgpu_connector->ddc_bus->aux.ddc;
-		DRM_DEBUG_KMS("ps4_bridge_get_modes: trying AUX DDC i2c_id=%d adapter_nr=%d adapter=%s\n",
-			      amdgpu_connector->ddc_bus->rec.i2c_id, ddc->nr, ddc->name);
-		drm_edid = drm_edid_read_custom(connector,
-						ps4_bridge_read_edid_block,
-						ddc);
-		if (!drm_edid) {
-			DRM_DEBUG_KMS("ps4_bridge_get_modes: trying AUX SMBUS DDC adapter_nr=%d adapter=%s\n",
-				      ddc->nr, ddc->name);
-			drm_edid = drm_edid_read_custom(connector,
-							ps4_bridge_read_edid_block_smbus,
-							ddc);
-		}
-	}
-
-	if (!drm_edid) {
-		ddc = &amdgpu_connector->ddc_bus->adapter;
-		DRM_DEBUG_KMS("ps4_bridge_get_modes: trying native DDC i2c_id=%d adapter_nr=%d adapter=%s has_aux=%d router_ddc=%d\n",
-			      amdgpu_connector->ddc_bus->rec.i2c_id, ddc->nr, ddc->name,
-			      amdgpu_connector->ddc_bus->has_aux,
-			      amdgpu_connector->router.ddc_valid);
-		drm_edid = drm_edid_read_custom(connector,
-						ps4_bridge_read_edid_block,
-						ddc);
-		if (!drm_edid) {
-			DRM_DEBUG_KMS("ps4_bridge_get_modes: trying native SMBUS DDC adapter_nr=%d adapter=%s\n",
-				      ddc->nr, ddc->name);
-			drm_edid = drm_edid_read_custom(connector,
-							ps4_bridge_read_edid_block_smbus,
-							ddc);
-		}
-	}
-
-	if (drm_edid) {
-		raw_edid = drm_edid_raw(drm_edid);
-		amdgpu_connector->edid = drm_edid_duplicate(raw_edid);
-		drm_edid_connector_update(connector, drm_edid);
-		count = drm_edid_connector_add_modes(connector);
-		newmode = drm_mode_duplicate(dev, &mode_1080p);
-		if (newmode) {
-			drm_mode_probed_add(connector, newmode);
-			count++;
-		}
-		DRM_DEBUG_KMS("ps4_bridge_get_modes: EDID ok, %d modes, extensions=%u\n",
-			      count, raw_edid ? raw_edid->extensions : 0);
-		drm_edid_free(drm_edid);
-		return count;
-	}
-
-	DRM_DEBUG_KMS("ps4_bridge_get_modes: no EDID, using fallback modes\n");
-
-fallback_modes:
 	newmode = drm_mode_duplicate(dev, &mode_1080p);
-	if (newmode) {
-		drm_mode_probed_add(connector, newmode);
-		count++;
-	}
+	drm_mode_probed_add(connector, newmode);
 
-	newmode = drm_mode_duplicate(dev, &mode_720p);
-	if (newmode) {
-		drm_mode_probed_add(connector, newmode);
-		count++;
-	}
+	newmode = drm_mode_duplicate(dev, &mode_1080p120);
+	drm_mode_probed_add(connector, newmode);
 
 	//newmode = drm_mode_duplicate(dev, &mode_720p);
 	//drm_mode_probed_add(connector, newmode);
 	//newmode = drm_mode_duplicate(dev, &mode_480p);
 	//drm_mode_probed_add(connector, newmode);
 
-	return count;
+	drm_connector_update_edid_property(connector, NULL);
+
+	return 0;
 }
 
 enum drm_connector_status ps4_bridge_detect(struct drm_connector *connector,
 		bool force)
 {
-	struct ps4_bridge *mn_bridge = g_bridge;
-	struct amdgpu_connector *amdgpu_connector = to_amdgpu_connector(connector);
-	struct amdgpu_connector_atom_dig *dig_connector = amdgpu_connector->con_priv;
+	struct ps4_bridge *mn_bridge = &g_bridge;
 	u8 reg;
-	int dpcd_ret = -ENODEV;
-	bool present, active;
+	struct amdgpu_connector *amdgpu_connector = to_amdgpu_connector(connector);
+	struct amdgpu_connector_atom_dig *amdgpu_dig_connector = amdgpu_connector->con_priv;
 
 	(void)force;
 
-	if (!mn_bridge)
-		return connector_status_disconnected;
+	amdgpu_dig_connector->dp_sink_type = CONNECTOR_OBJECT_ID_DISPLAYPORT;
+	amdgpu_atombios_dp_get_dpcd(amdgpu_connector);
 
 	mutex_lock(&mn_bridge->mutex);
 	cq_init(&mn_bridge->cq, 4);
@@ -1092,40 +767,12 @@ enum drm_connector_status ps4_bridge_detect(struct drm_connector *connector,
 	reg = mn_bridge->cq.reply.databuf[3];
 	mutex_unlock(&mn_bridge->mutex);
 
-	present = !!(reg & TMONREG_MONITOR_PRESENT);
-	active = present && reg != TMONREG_MONITOR_POWERED_OFF;
+	DRM_DEBUG_KMS("TMONREG=0x%02x\n", reg);
 
-	/*
-	 * Belize can raise TMONREG monitor-present before the bridge AUX/DPCD
-	 * side is actually ready. Treat a successful DPCD read as the
-	 * authoritative "sink is ready" signal so we don't start link training
-	 * against a half-awake bridge and trip clock recovery failures.
-	 */
-	if (dig_connector)
-		dig_connector->dp_sink_type = CONNECTOR_OBJECT_ID_DISPLAYPORT;
-
-	if (amdgpu_connector->ddc_bus && amdgpu_connector->ddc_bus->has_aux)
-		dpcd_ret = amdgpu_atombios_dp_get_dpcd(amdgpu_connector);
-
-	if (dpcd_ret != 0 && dig_connector) {
-		dig_connector->dp_sink_type = CONNECTOR_OBJECT_ID_NONE;
-		dig_connector->dp_lane_count = 0;
-		dig_connector->dp_clock = 0;
-	}
-
-	DRM_DEBUG_KMS("TMONREG=0x%02x present=%d active=%d dpcd_ret=%d lanes=%u clock=%u\n",
-		      reg, present, active, dpcd_ret,
-		      dig_connector ? dig_connector->dp_lane_count : 0,
-		      dig_connector ? dig_connector->dp_clock : 0);
-
-	if (dpcd_ret == 0)
+	if (reg & TMONREG_HPD)
 		return connector_status_connected;
-
-	if (!amdgpu_connector->ddc_bus || !amdgpu_connector->ddc_bus->has_aux)
-		return active ? connector_status_connected :
-			connector_status_disconnected;
-
-	return connector_status_disconnected;
+	else
+		return connector_status_disconnected;
 }
 
 enum drm_mode_status ps4_bridge_mode_valid(struct drm_connector *connector,
@@ -1161,52 +808,21 @@ static struct drm_bridge_funcs ps4_bridge_funcs = {
 int ps4_bridge_register(struct drm_connector *connector,
 			     struct drm_encoder *encoder)
 {
-	struct device *dev = connector->dev->dev;
 	int ret;
-	struct ps4_bridge *mn_bridge;
-
-	if (g_bridge) {
-		if (g_bridge->connector == connector && g_bridge->encoder == encoder)
-			return 0;
-
-		DRM_ERROR("PS4 bridge already registered for a different connector\n");
-		return -EBUSY;
-	}
-
-	mn_bridge = devm_drm_bridge_alloc(dev, struct ps4_bridge, bridge,
-					      &ps4_bridge_funcs);
-	if (IS_ERR(mn_bridge))
-		return PTR_ERR(mn_bridge);
-
-	ret = devm_add_action_or_reset(dev, ps4_bridge_clear_global, mn_bridge);
-	if (ret)
-		return ret;
-
-	mutex_init(&mn_bridge->mutex);
+	struct ps4_bridge *mn_bridge = &g_bridge;
 
 	mn_bridge->encoder = encoder;
 	mn_bridge->connector = connector;
 	mn_bridge->bridge.type = DRM_MODE_CONNECTOR_HDMIA;
+	mn_bridge->bridge.funcs = &ps4_bridge_funcs;
 
-	/*
-	 * Enable DRM connection polling. Without HPD interrupts from Aeolia,
-	 * polling is the only way the kernel will call detect() automatically
-	 * and trigger a modeset when the cable is replugged.
-	 */
-	connector->polled = DRM_CONNECTOR_POLL_CONNECT |
-			    DRM_CONNECTOR_POLL_DISCONNECT;
-
-	ret = devm_drm_bridge_add(dev, &mn_bridge->bridge);
-	if (ret)
-		return ret;
+	drm_bridge_add(&mn_bridge->bridge);
 
 	ret = drm_bridge_attach(mn_bridge->encoder, &mn_bridge->bridge, NULL, 0);
 	if (ret) {
 		DRM_ERROR("Failed to initialize bridge with drm\n");
-		return ret;
+		return -EINVAL;
 	}
-
-	g_bridge = mn_bridge;
 
 	return 0;
 }
