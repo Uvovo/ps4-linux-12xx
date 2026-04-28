@@ -1,4 +1,8 @@
-#include <linux/input.h>
+#include <linux/errno.h>
+#include <linux/export.h>
+#include <linux/mutex.h>
+#include <asm/ps4.h>
+
 #include "aeolia.h"
 
 /* Prototype declarations */
@@ -7,46 +11,59 @@ int icc_pwrbutton_init(struct apcie_dev *sc);
 void icc_pwrbutton_remove(struct apcie_dev *sc);
 /* ---------------------- */ //this file just felt very empty at the top hence the comments
 
+static DEFINE_MUTEX(ps4_display_reprobe_lock);
+static ps4_display_reprobe_cb_t ps4_display_reprobe_cb;
+static void *ps4_display_reprobe_data;
+
+int ps4_display_reprobe_register(ps4_display_reprobe_cb_t cb, void *data)
+{
+	if (!cb)
+		return -EINVAL;
+
+	mutex_lock(&ps4_display_reprobe_lock);
+	ps4_display_reprobe_cb = cb;
+	ps4_display_reprobe_data = data;
+	mutex_unlock(&ps4_display_reprobe_lock);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(ps4_display_reprobe_register);
+
+void ps4_display_reprobe_unregister(ps4_display_reprobe_cb_t cb, void *data)
+{
+	mutex_lock(&ps4_display_reprobe_lock);
+	if (ps4_display_reprobe_cb == cb &&
+	    ps4_display_reprobe_data == data) {
+		ps4_display_reprobe_cb = NULL;
+		ps4_display_reprobe_data = NULL;
+	}
+	mutex_unlock(&ps4_display_reprobe_lock);
+}
+EXPORT_SYMBOL_GPL(ps4_display_reprobe_unregister);
+
+void ps4_display_reprobe_request(void)
+{
+	mutex_lock(&ps4_display_reprobe_lock);
+	if (ps4_display_reprobe_cb)
+		ps4_display_reprobe_cb(ps4_display_reprobe_data);
+	mutex_unlock(&ps4_display_reprobe_lock);
+}
+
 void icc_pwrbutton_trigger(struct apcie_dev *sc, int state)
 {
-	if (sc->icc.pwrbutton_dev) {
-		input_report_key(sc->icc.pwrbutton_dev, KEY_POWER, state ? 1 : 0);
-		input_sync(sc->icc.pwrbutton_dev);
-	}
+	/*
+	 * Repurpose the PS4 power button as a display reprobe trigger.
+	 * Do not emit KEY_POWER because userspace may treat it as
+	 * shutdown/suspend/poweroff.
+	 */
+	if (!state)
+		ps4_display_reprobe_request();
 }
 
 int icc_pwrbutton_init(struct apcie_dev *sc)
 {
 	int ret = 0;
 	u16 button;
-	struct input_dev *dev;
-
-	dev = input_allocate_device();
-	if (!dev) {
-		sc_err("%s: Not enough memory.\n", __func__);
-		return -ENOMEM;
-	}
-
-	set_bit(EV_KEY, dev->evbit);
-	set_bit(KEY_POWER, dev->keybit);
-
-	dev->name = "Power Button";
-	dev->id.bustype = BUS_HOST;
-
-	/* this makes the button look like an acpi power button
-	 * no clue whether anyone relies on that though */
-	dev->id.product = 0x02;
-	dev->phys = "LNXPWRBN/button/input0";
-
-	dev->dev.parent = &sc->pdev->dev;
-	ret = input_register_device(dev);
-	if (ret) {
-		sc_err("%s: Failed to register device\n", __func__);
-		input_free_device(dev);
-		return ret;
-	}
-
-	sc->icc.pwrbutton_dev = dev;
 
 	// enable power button notifications
 	button = 0x100;
@@ -69,7 +86,5 @@ int icc_pwrbutton_init(struct apcie_dev *sc)
 
 void icc_pwrbutton_remove(struct apcie_dev *sc)
 {
-	if (sc->icc.pwrbutton_dev)
-		input_unregister_device(sc->icc.pwrbutton_dev);
 	sc->icc.pwrbutton_dev = NULL;
 }

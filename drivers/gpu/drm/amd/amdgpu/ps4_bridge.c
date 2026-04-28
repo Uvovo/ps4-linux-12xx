@@ -41,9 +41,11 @@
 #include <drm/drm_encoder.h>
 
 #include <linux/err.h>
+#include <linux/atomic.h>
 #include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/i2c-algo-bit.h>
+#include <linux/workqueue.h>
 
 
 #include "amdgpu.h"
@@ -166,6 +168,8 @@ struct ps4_bridge {
 	struct drm_bridge bridge;
 	struct i2c_cmdqueue cq;
 	struct mutex mutex;
+	struct work_struct reprobe_work;
+	atomic_t reprobe_pending;
 
 	int mode;
 	bool enabled;
@@ -387,9 +391,59 @@ static inline struct ps4_bridge *
 	return container_of(bridge, struct ps4_bridge, bridge);
 }
 
-static void ps4_bridge_clear_global(void *data)
+static void ps4_bridge_reprobe_work(struct work_struct *work)
 {
-	if (g_bridge == data)
+	struct ps4_bridge *mn_bridge =
+		container_of(work, struct ps4_bridge, reprobe_work);
+	struct drm_connector *connector = mn_bridge->connector;
+	struct drm_device *dev;
+	enum drm_connector_status status;
+
+	if (!connector || !connector->dev)
+		goto out;
+
+	dev = connector->dev;
+
+	DRM_INFO("ps4_bridge: display reprobe requested by power button\n");
+
+	status = drm_helper_probe_detect(connector, NULL, true);
+	connector->status = status;
+
+	DRM_INFO("ps4_bridge: connector status before hotplug helper: %d\n",
+		 status);
+
+	/*
+	 * Force a connector probe and emit a hotplug event from process
+	 * context. drm_helper_hpd_irq_event() uses non-forced detect, which
+	 * this bridge intentionally treats as cached status.
+	 */
+	drm_kms_helper_hotplug_event(dev);
+
+out:
+	atomic_set(&mn_bridge->reprobe_pending, 0);
+}
+
+static void ps4_bridge_reprobe_request(void *data)
+{
+	struct ps4_bridge *mn_bridge = data;
+
+	if (!mn_bridge)
+		return;
+
+	if (atomic_cmpxchg(&mn_bridge->reprobe_pending, 0, 1))
+		return;
+
+	schedule_work(&mn_bridge->reprobe_work);
+}
+
+static void ps4_bridge_cleanup(void *data)
+{
+	struct ps4_bridge *mn_bridge = data;
+
+	ps4_display_reprobe_unregister(ps4_bridge_reprobe_request, mn_bridge);
+	cancel_work_sync(&mn_bridge->reprobe_work);
+
+	if (g_bridge == mn_bridge)
 		g_bridge = NULL;
 }
 
@@ -1155,15 +1209,17 @@ int ps4_bridge_register(struct drm_connector *connector,
 	if (IS_ERR(mn_bridge))
 		return PTR_ERR(mn_bridge);
 
-	ret = devm_add_action_or_reset(dev, ps4_bridge_clear_global, mn_bridge);
-	if (ret)
-		return ret;
-
 	mutex_init(&mn_bridge->mutex);
+	INIT_WORK(&mn_bridge->reprobe_work, ps4_bridge_reprobe_work);
+	atomic_set(&mn_bridge->reprobe_pending, 0);
 
 	mn_bridge->encoder = encoder;
 	mn_bridge->connector = connector;
 	mn_bridge->bridge.type = DRM_MODE_CONNECTOR_HDMIA;
+
+	ret = devm_add_action_or_reset(dev, ps4_bridge_cleanup, mn_bridge);
+	if (ret)
+		return ret;
 
 	/*
 	 * Leave connector polling disabled. Userspace can force a reprobe
@@ -1182,6 +1238,11 @@ int ps4_bridge_register(struct drm_connector *connector,
 	}
 
 	g_bridge = mn_bridge;
+
+	ret = ps4_display_reprobe_register(ps4_bridge_reprobe_request, mn_bridge);
+	if (ret)
+		DRM_WARN("ps4_bridge: failed to register power-button reprobe callback: %d\n",
+			 ret);
 
 	return 0;
 }
