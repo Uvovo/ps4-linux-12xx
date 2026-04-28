@@ -59,7 +59,7 @@
  * ============================================================
  *   /sys/class/hwmon/hwmonX/
  *     temp1_input  (RO) — APU temperature, milli-Celsius
- *     temp1_crit   (RW) — Fan threshold, milli-Celsius (20000–85000)
+ *     temp1_crit   (RW) — Fan threshold, milli-Celsius (-20000–85000)
  *     fan1_input   (RO) — Fan speed, RPM
  *
  * ============================================================
@@ -163,7 +163,7 @@ static int icc_read_fan_threshold(long *thresh_mc)
 /* ============================================================
  * icc_write_fan_threshold - Set fan threshold (read-modify-write)
  * ============================================================
- * @thresh_mc: Desired threshold, milli-Celsius (20000–85000).
+ * @thresh_mc: Desired threshold, milli-Celsius (-20000–85000).
  *
  * IMPORTANT: Implements a full read-modify-write cycle.
  *
@@ -372,7 +372,11 @@ static int ps4_fan_write(struct device *dev, enum hwmon_sensor_types type,
 
 	if (type != hwmon_temp || channel != 0 || attr != hwmon_temp_crit)
 		return -EOPNOTSUPP;
+	/* Validate that the value is a multiple of 1000 (integer Celsius) */
 	if (val % 1000)
+		return -EINVAL;
+	/* Validate that the value is within the hardware-supported range */
+	if (val < PS4_FAN_THRESH_MIN_MC || val > PS4_FAN_THRESH_MAX_MC)
 		return -EINVAL;
 
 	mutex_lock(&priv->lock);

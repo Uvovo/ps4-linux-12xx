@@ -1098,8 +1098,15 @@ enum drm_connector_status ps4_bridge_detect(struct drm_connector *connector,
 		      dig_connector ? dig_connector->dp_lane_count : 0,
 		      dig_connector ? dig_connector->dp_clock : 0);
 
-	if (!amdgpu_connector->ddc_bus || !amdgpu_connector->ddc_bus->has_aux)
+	if (!amdgpu_connector->ddc_bus || !amdgpu_connector->ddc_bus->has_aux) {
+		DRM_DEBUG_KMS("ps4_bridge_detect: No DDC bus or AUX, returning connected\n");
 		return connector_status_connected;
+	}
+
+	/* Add more detailed logging for DPCD return values */
+	DRM_DEBUG_KMS("ps4_bridge_detect: dpcd_ret=%d, returning %s\n",
+		      dpcd_ret,
+		      dpcd_ret == 0 ? "connected" : "disconnected");
 
 	return dpcd_ret == 0 ? connector_status_connected :
 	       connector_status_disconnected;

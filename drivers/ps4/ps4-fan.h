@@ -59,7 +59,7 @@
  *   temp1_crit   (RW) — Fan threshold, milli-Celsius
  *                       Read:  0x0A/0x07 reply[5] * 1000
  *                       Write: read-modify-write via 0x0A/0x07→0x0A/0x06
- *                       Valid: 20000–85000 milli-Celsius
+ *                       Valid: -20000–85000 milli-Celsius
  *   fan1_input   (RO) — Fan speed, RPM (integer)
  *                       Source: 0x0A/0x08 reply[8:12], 16.16 fixed-point
  */
@@ -113,7 +113,7 @@
 /* ============================================================
  * Fan Threshold Limits
  * ============================================================ */
-#define PS4_FAN_THRESH_MIN_C            20
+#define PS4_FAN_THRESH_MIN_C            -20
 #define PS4_FAN_THRESH_MAX_C            85
 #define PS4_FAN_THRESH_DEFAULT_C        79    /* hardware power-on default */
 
