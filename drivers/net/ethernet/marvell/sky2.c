@@ -3054,8 +3054,8 @@ static int sky2_poll(struct napi_struct *napi, int work_limit)
 	napi_complete_done(napi, work_done);
 	sky2_read32(hw, B0_Y2_SP_LISR);
 #ifdef CONFIG_X86_PS4
-	/* Aeolia: LISR read has no unmas side-effeectt; rearm via ICR */
-	sky2_write32(hw, AEOLIA_SP_ICR,1);
+	/* Aeolia: LISR read has no unmask side-effect; rearm via ICR. */
+	sky2_write32(hw, AEOLIA_SP_ICR, 1);
 #endif
 done:
 
@@ -3074,7 +3074,19 @@ static irqreturn_t sky2_intr(int irq, void *dev_id)
 	/* Reading this masks interrupts as side effect (standard Yukon-2 only) */
 	status = sky2_read32(hw, B0_Y2_SP_ISRC2);
 	if (status == 0 || status == ~0) {
+#ifdef CONFIG_X86_PS4
+		/* Not for us. The Aeolia (CXD90025G) NIC IRQ is registered
+		 * IRQF_SHARED and does not auto-mask via ISRC2/LISR reads, so
+		 * we masked it explicitly on entry above. We must re-arm the
+		 * Aeolia ICR before returning IRQ_NONE; otherwise a spurious
+		 * shared-IRQ entry leaves the NIC interrupt permanently masked
+		 * and the link wedges silently after long uptime. The standard
+		 * B0_Y2_SP_ICR (0x002c) is at a different offset on Aeolia and
+		 * is not the controller actually masking us here. */
+		sky2_write32(hw, AEOLIA_SP_ICR, 1);
+#else
 		sky2_write32(hw, B0_Y2_SP_ICR, 2);
+#endif
 		return IRQ_NONE;
 	}
 
