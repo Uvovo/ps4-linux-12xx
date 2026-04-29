@@ -169,14 +169,28 @@ static void handle_message(struct apcie_dev *sc)
 	}
 }
 
+/*
+ * The ICC IRQ is registered IRQF_SHARED and the status register is a real
+ * MMIO that may report bits outside SEND|ACK (reserved/undefined values,
+ * vendor-specific flags, or noise on the shared line). The handler can only
+ * clear SEND and ACK, so any other bit being set would leave status non-zero
+ * forever and pin the CPU inside this handler. Mask status to the bits we
+ * actually service, and bound the loop with a small cap so a runaway
+ * SEND/ACK feedback storm from the south-bridge cannot keep us in IRQ
+ * context indefinitely either.
+ */
+#define ICC_IRQ_MAX_LOOPS 64
+
 static irqreturn_t icc_interrupt(int irq, void *arg)
 {
 	struct apcie_dev *sc = arg;
 	u32 status;
 	u32 ret = IRQ_NONE;
+	int loops = 0;
 
 	do {
 		status = ioread32(sc->bar4 + APCIE_REG_ICC_STATUS);
+		status &= APCIE_ICC_SEND | APCIE_ICC_ACK;
 
 		if (status & APCIE_ICC_ACK) {
 			iowrite32(APCIE_ICC_ACK,
@@ -193,6 +207,13 @@ static irqreturn_t icc_interrupt(int irq, void *arg)
 			iowrite32(APCIE_ICC_ACK,
 				  sc->bar4 + APCIE_REG_ICC_DOORBELL);
 			ret = IRQ_HANDLED;
+		}
+
+		if (++loops >= ICC_IRQ_MAX_LOOPS) {
+			dev_warn_ratelimited(&sc->pdev->dev,
+				"icc: IRQ loop cap hit (status=0x%x), deferring\n",
+				status);
+			break;
 		}
 	} while (status);
 
