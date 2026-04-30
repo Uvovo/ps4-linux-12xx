@@ -4447,6 +4447,12 @@ static int sky2_debug_show(struct seq_file *seq, void *v)
 		   sky2_read32(hw, B0_ISRC),
 		   sky2_read32(hw, B0_IMSK),
 		   sky2_read32(hw, B0_Y2_SP_ICR));
+#ifdef CONFIG_X86_PS4
+	if (hw->pdev->vendor == PCI_VENDOR_ID_SONY &&
+	    hw->pdev->device == PCI_DEVICE_ID_SONY_AEOLIA_GBE)
+		seq_printf(seq, "Aeolia IRQ control=%x\n",
+			   sky2_read32(hw, AEOLIA_SP_ICR));
+#endif
 
 	if (!netif_running(dev)) {
 		seq_puts(seq, "network not running\n");
