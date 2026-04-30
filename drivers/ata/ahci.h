@@ -469,5 +469,4 @@ static inline int ahci_nr_ports(u32 cap)
 {
 	return (cap & 0x1f) + 1;
 }
-
 #endif /* _AHCI_H */

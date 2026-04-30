@@ -33,6 +33,10 @@
 #include <linux/io-64-nonatomic-lo-hi.h>
 #include "ahci.h"
 
+#ifdef CONFIG_X86_PS4
+#include <asm/ps4.h>
+#endif
+
 #define DRV_NAME	"ahci"
 #define DRV_VERSION	"3.0"
 
@@ -43,6 +47,7 @@ enum {
 	AHCI_PCI_BAR_ENMOTUS	= 2,
 	AHCI_PCI_BAR_CAVIUM_GEN5	= 4,
 	AHCI_PCI_BAR_STANDARD	= 5,
+	AHCI_PCI_BAR0_BAIKAL	= 0,
 };
 
 enum board_ids {
@@ -108,6 +113,22 @@ static int ahci_pci_device_resume(struct device *dev);
 static const struct scsi_host_template ahci_sht = {
 	AHCI_SHT("ahci"),
 };
+
+#ifdef CONFIG_X86_PS4
+#define PS4_AHCI_DMA_BOUNDARY	0xB7FFFFFFUL
+
+static const struct scsi_host_template ahci_ps4_sht = {
+	__ATA_BASE_SHT("ahci"),
+	.can_queue		= AHCI_MAX_CMDS,
+	.sg_tablesize		= AHCI_MAX_SG,
+	.dma_boundary		= PS4_AHCI_DMA_BOUNDARY,
+	.shost_groups		= ahci_shost_groups,
+	.sdev_groups		= ahci_sdev_groups,
+	.change_queue_depth	= ata_scsi_change_queue_depth,
+	.tag_alloc_policy_rr	= true,
+	.sdev_configure		= ata_scsi_sdev_configure,
+};
+#endif
 
 static struct ata_port_operations ahci_vt8251_ops = {
 	.inherits		= &ahci_ops,
@@ -651,6 +672,11 @@ static const struct pci_device_id ahci_pci_tbl[] = {
 	/* Enmotus */
 	{ PCI_DEVICE(0x1c44, 0x8000), board_ahci },
 
+	/* Sony (PS4) */
+	{ PCI_VDEVICE(SONY, PCI_DEVICE_ID_SONY_AEOLIA_AHCI), board_ahci },
+	{ PCI_VDEVICE(SONY, PCI_DEVICE_ID_SONY_BELIZE_AHCI), board_ahci },
+	{ PCI_VDEVICE(SONY, PCI_DEVICE_ID_SONY_BAIKAL_AHCI), board_ahci },
+
 	/* Loongson */
 	{ PCI_VDEVICE(LOONGSON, 0x7a08), board_ahci },
 
@@ -1103,7 +1129,22 @@ static int ahci_configure_dma_masks(struct pci_dev *pdev,
 	 */
 	if (pdev->dma_mask && pdev->dma_mask < DMA_BIT_MASK(32))
 		return 0;
-
+#ifdef CONFIG_X86_PS4
+	if (pdev->vendor == PCI_VENDOR_ID_SONY) {
+		rc = dma_set_mask(&pdev->dev, DMA_BIT_MASK(31));
+		if (rc) {
+			dev_err(&pdev->dev, "31-bit DMA enable failed\n");
+			return rc;
+		}
+		rc = dma_set_coherent_mask(&pdev->dev, DMA_BIT_MASK(31));
+		if (rc) {
+			dev_err(&pdev->dev,
+				"31-bit consistent DMA enable failed\n");
+			return rc;
+		}
+		return 0;
+	}
+#endif
 	rc = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(dma_bits));
 	if (rc)
 		dev_err(&pdev->dev, "DMA enable failed\n");
@@ -1888,11 +1929,33 @@ static ssize_t remapped_nvme_show(struct device *dev,
 
 static DEVICE_ATTR_RO(remapped_nvme);
 
+#ifdef CONFIG_X86_PS4
+static bool ahci_baikal_shared_phy_seeded(struct pci_dev *pdev)
+{
+	struct pci_dev *xhci;
+	bool seeded = false;
+
+	xhci = pci_get_slot(pdev->bus, (pdev->devfn & ~0x7) | 7);
+	if (!xhci)
+		return false;
+
+	if (xhci->vendor == PCI_VENDOR_ID_SONY &&
+	    xhci->device == PCI_DEVICE_ID_SONY_BAIKAL_XHCI &&
+	    xhci->dev.driver &&
+	    !strcmp(xhci->dev.driver->name, "xhci_aeolia"))
+		seeded = true;
+
+	pci_dev_put(xhci);
+	return seeded;
+}
+#endif
+
 static int ahci_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	unsigned int board_id = ent->driver_data;
 	struct ata_port_info pi = ahci_port_info[board_id];
 	const struct ata_port_info *ppi[] = { &pi, NULL };
+	const struct scsi_host_template *sht = &ahci_sht;
 	struct device *dev = &pdev->dev;
 	struct ahci_host_priv *hpriv;
 	struct ata_host *host;
@@ -1900,6 +1963,14 @@ static int ahci_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	int ahci_pci_bar = AHCI_PCI_BAR_STANDARD;
 
 	WARN_ON((int)ATA_MAX_QUEUE > AHCI_MAX_CMDS);
+
+#ifdef CONFIG_X86_PS4
+	if (apcie_status() == 0)
+		return -EPROBE_DEFER;
+
+	if (pdev->vendor == PCI_VENDOR_ID_SONY)
+		sht = &ahci_ps4_sht;
+#endif
 
 	ata_print_version_once(&pdev->dev, DRV_VERSION);
 
@@ -1931,6 +2002,9 @@ static int ahci_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 			ahci_pci_bar = AHCI_PCI_BAR_CAVIUM;
 		if (pdev->device == 0xa084)
 			ahci_pci_bar = AHCI_PCI_BAR_CAVIUM_GEN5;
+	} else if (pdev->vendor == PCI_VENDOR_ID_SONY &&
+		   pdev->device == PCI_DEVICE_ID_SONY_BAIKAL_AHCI) {
+		ahci_pci_bar = AHCI_PCI_BAR0_BAIKAL;
 	} else if (pdev->vendor == PCI_VENDOR_ID_LOONGSON) {
 		if (pdev->device == 0x7a08)
 			ahci_pci_bar = AHCI_PCI_BAR_LOONGSON;
@@ -1994,6 +2068,20 @@ static int ahci_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	sysfs_add_file_to_group(&pdev->dev.kobj,
 				&dev_attr_remapped_nvme.attr,
 				NULL);
+
+#ifdef CONFIG_X86_PS4
+	if (pdev->vendor == PCI_VENDOR_ID_SONY &&
+	    pdev->device == PCI_DEVICE_ID_SONY_BAIKAL_AHCI) {
+		if (!ahci_baikal_shared_phy_seeded(pdev)) {
+			rc = bpcie_sata_phy_init(pdev, hpriv->mmio);
+			if (rc)
+				goto err_rm_sysfs_file;
+		} else {
+			dev_dbg(&pdev->dev,
+				"Baikal xHCI sibling already initialized SATA PHY\n");
+		}
+	}
+#endif
 
 #ifdef CONFIG_ARM64
 	if (pdev->vendor == PCI_VENDOR_ID_HUAWEI &&
@@ -2137,7 +2225,7 @@ static int ahci_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	pci_set_master(pdev);
 
-	rc = ahci_host_activate(host, &ahci_sht);
+	rc = ahci_host_activate(host, sht);
 	if (rc)
 		goto err_rm_sysfs_file;
 
