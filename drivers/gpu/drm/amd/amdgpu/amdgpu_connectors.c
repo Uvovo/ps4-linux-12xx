@@ -37,6 +37,9 @@
 #include "amdgpu_connectors.h"
 #include "amdgpu_i2c.h"
 #include "amdgpu_display.h"
+#ifdef CONFIG_X86_PS4
+#include "ps4_bridge.h"
+#endif
 
 #include <linux/pm_runtime.h>
 
@@ -1560,6 +1563,25 @@ amdgpu_connector_late_register(struct drm_connector *connector)
 	return r;
 }
 
+#ifdef CONFIG_X86_PS4
+static const struct drm_connector_helper_funcs amdgpu_ps4_dp_connector_helper_funcs = {
+	.get_modes = ps4_bridge_get_modes,
+	.mode_valid = ps4_bridge_mode_valid,
+	.best_encoder = amdgpu_connector_dvi_encoder,
+};
+
+static const struct drm_connector_funcs amdgpu_ps4_dp_connector_funcs = {
+	.dpms = drm_helper_connector_dpms,
+	.detect = ps4_bridge_detect,
+	.fill_modes = drm_helper_probe_single_connector_modes,
+	.set_property = amdgpu_connector_set_property,
+	.early_unregister = amdgpu_connector_unregister,
+	.destroy = amdgpu_connector_destroy,
+	.force = amdgpu_connector_dvi_force,
+	.late_register = amdgpu_connector_late_register,
+};
+#endif
+
 static const struct drm_connector_helper_funcs amdgpu_connector_dp_helper_funcs = {
 	.get_modes = amdgpu_connector_dp_get_modes,
 	.mode_valid = amdgpu_connector_dp_mode_valid,
@@ -1609,10 +1631,27 @@ amdgpu_connector_add(struct amdgpu_device *adev,
 	uint32_t subpixel_order = SubPixelNone;
 	bool shared_ddc = false;
 	bool is_dp_bridge = false;
+	bool is_ps4_bridge = false;
 	bool has_aux = false;
 
 	if (connector_type == DRM_MODE_CONNECTOR_Unknown)
 		return;
+
+#ifdef CONFIG_X86_PS4
+	if (adev->asic_type == CHIP_LIVERPOOL ||
+	    adev->asic_type == CHIP_GLADIUS) {
+		if (connector_type != DRM_MODE_CONNECTOR_DisplayPort)
+			return;
+
+		/*
+		 * PS4 uses one internal DP path wired into an external HDMI
+		 * bridge, so expose it as a single HDMI connector.
+		 */
+		connector_type = DRM_MODE_CONNECTOR_HDMIA;
+		is_dp_bridge = true;
+		is_ps4_bridge = true;
+	}
+#endif
 
 	/* see if we already added it */
 	drm_connector_list_iter_begin(dev, &iter);
@@ -1712,12 +1751,24 @@ amdgpu_connector_add(struct amdgpu_device *adev,
 		case DRM_MODE_CONNECTOR_HDMIA:
 		case DRM_MODE_CONNECTOR_HDMIB:
 		case DRM_MODE_CONNECTOR_DisplayPort:
-			drm_connector_init_with_ddc(dev, &amdgpu_connector->base,
-						    &amdgpu_connector_dp_funcs,
-						    connector_type,
-						    ddc);
-			drm_connector_helper_add(&amdgpu_connector->base,
-						 &amdgpu_connector_dp_helper_funcs);
+#ifdef CONFIG_X86_PS4
+			if (is_ps4_bridge) {
+				drm_connector_init_with_ddc(dev, &amdgpu_connector->base,
+							    &amdgpu_ps4_dp_connector_funcs,
+							    connector_type,
+							    ddc);
+				drm_connector_helper_add(&amdgpu_connector->base,
+							 &amdgpu_ps4_dp_connector_helper_funcs);
+			} else
+#endif
+			{
+				drm_connector_init_with_ddc(dev, &amdgpu_connector->base,
+							    &amdgpu_connector_dp_funcs,
+							    connector_type,
+							    ddc);
+				drm_connector_helper_add(&amdgpu_connector->base,
+							 &amdgpu_connector_dp_helper_funcs);
+			}
 			drm_object_attach_property(&amdgpu_connector->base.base,
 						      adev->mode_info.underscan_property,
 						      UNDERSCAN_OFF);
