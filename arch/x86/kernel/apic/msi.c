@@ -23,11 +23,17 @@
 
 struct irq_domain *x86_pci_msi_default_domain __ro_after_init;
 
+void irq_msi_compose_msg(struct irq_data *data, struct msi_msg *msg)
+{
+	__irq_msi_compose_msg(irqd_cfg(data), msg, false);
+}
+EXPORT_SYMBOL_GPL(irq_msi_compose_msg);
+
 static void irq_msi_update_msg(struct irq_data *irqd, struct irq_cfg *cfg)
 {
 	struct msi_msg msg[2] = { [1] = { }, };
 
-	__irq_msi_compose_msg(cfg, msg, false);
+	irq_msi_compose_msg(irqd, msg);
 	irq_data_get_irq_chip(irqd)->irq_write_msi_msg(irqd, msg);
 }
 
