@@ -37,6 +37,9 @@
 #endif
 
 #include "cqhci.h"
+#ifdef CONFIG_X86_PS4
+#include <asm/ps4.h>
+#endif
 
 #include "sdhci.h"
 #include "sdhci-cqhci.h"
@@ -325,6 +328,56 @@ static const struct sdhci_pci_fixes sdhci_cafe = {
 static const struct sdhci_pci_fixes sdhci_intel_qrk = {
 	.quirks		= SDHCI_QUIRK_NO_HISPD_BIT,
 };
+#ifdef CONFIG_X86_PS4
+static int aeolia_probe(struct sdhci_pci_chip *chip)
+{
+	chip->num_slots = 1;
+	chip->first_bar = 0;
+	if (apcie_status() == 0)
+		return -EPROBE_DEFER;
+
+	chip->pdev->class &= ~0x0000FF;
+	chip->pdev->class |= PCI_SDHCI_IFDMA;
+	return 0;
+}
+
+static int aeolia_probe_slot(struct sdhci_pci_slot *slot)
+{
+	int err = pci_alloc_irq_vectors(slot->chip->pdev, 1, 1,
+					PCI_IRQ_MSIX | PCI_IRQ_MSI);
+
+	if (err <= 0) {
+		dev_err(&slot->chip->pdev->dev, "failed to get IRQ: %d\n", err);
+		return -ENODEV;
+	}
+	slot->host->irq = pci_irq_vector(slot->chip->pdev, 0);
+	return 0;
+}
+
+static void aeolia_remove_slot(struct sdhci_pci_slot *slot, int dead)
+{
+	pci_free_irq_vectors(slot->chip->pdev);
+}
+
+static int aeolia_enable_dma(struct sdhci_pci_slot *slot)
+{
+	if (dma_set_mask(&slot->chip->pdev->dev, DMA_BIT_MASK(31))) {
+		return -EINVAL;
+	}
+	if (dma_set_coherent_mask(&slot->chip->pdev->dev, DMA_BIT_MASK(31))) {
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static const struct sdhci_pci_fixes sdhci_aeolia = {
+	.probe		= aeolia_probe,
+	.probe_slot	= aeolia_probe_slot,
+	.remove_slot	= aeolia_remove_slot,
+	.enable_dma	= aeolia_enable_dma,
+};
+#endif
 
 static int mrst_hc_probe_slot(struct sdhci_pci_slot *slot)
 {
@@ -1561,6 +1614,7 @@ static int jmicron_resume(struct sdhci_pci_chip *chip)
 }
 #endif
 
+
 static const struct sdhci_pci_fixes sdhci_jmicron = {
 	.probe		= jmicron_probe,
 
@@ -1956,6 +2010,11 @@ static const struct pci_device_id pci_ids[] = {
 	SDHCI_PCI_DEVICE(O2, GG8_9863, o2),
 	SDHCI_PCI_DEVICE(ARASAN, PHY_EMMC, arasan),
 	SDHCI_PCI_DEVICE(SYNOPSYS, DWC_MSHC, snps),
+#ifdef CONFIG_X86_PS4
+	SDHCI_PCI_DEVICE(SONY, AEOLIA_SDHCI, aeolia),
+	SDHCI_PCI_DEVICE(SONY, BELIZE_SDHCI, aeolia),
+	SDHCI_PCI_DEVICE(SONY, BAIKAL_SDHCI, aeolia),
+#endif
 	SDHCI_PCI_DEVICE(GLI, 9750, gl9750),
 	SDHCI_PCI_DEVICE(GLI, 9755, gl9755),
 	SDHCI_PCI_DEVICE(GLI, 9763E, gl9763e),
@@ -1990,6 +2049,9 @@ int sdhci_pci_enable_dma(struct sdhci_host *host)
 	}
 
 	pci_set_master(pdev);
+
+	if (slot->chip->fixes && slot->chip->fixes->enable_dma)
+		return slot->chip->fixes->enable_dma(slot);
 
 	return 0;
 }
@@ -2122,12 +2184,11 @@ static void sdhci_pci_remove_gpio_lookup_table(struct gpiod_lookup_table *lookup
 }
 
 static struct sdhci_pci_slot *sdhci_pci_probe_slot(
-	struct pci_dev *pdev, struct sdhci_pci_chip *chip, int first_bar,
-	int slotno)
+	struct pci_dev *pdev, struct sdhci_pci_chip *chip, int slotno)
 {
 	struct sdhci_pci_slot *slot;
 	struct sdhci_host *host;
-	int ret, bar = first_bar + slotno;
+	int ret, bar = chip->first_bar + slotno;
 	size_t priv_size = chip->fixes ? chip->fixes->priv_size : 0;
 
 	if (!(pci_resource_flags(pdev, bar) & IORESOURCE_MEM)) {
@@ -2342,6 +2403,7 @@ static int sdhci_pci_probe(struct pci_dev *pdev,
 		chip->allow_runtime_pm = chip->fixes->allow_runtime_pm;
 	}
 	chip->num_slots = slots;
+	chip->first_bar = first_bar;
 	chip->pm_retune = true;
 	chip->rpm_retune = true;
 
@@ -2356,7 +2418,8 @@ static int sdhci_pci_probe(struct pci_dev *pdev,
 	slots = chip->num_slots;	/* Quirk may have changed this */
 
 	for (i = 0; i < slots; i++) {
-		slot = sdhci_pci_probe_slot(pdev, chip, first_bar, i);
+		slot = sdhci_pci_probe_slot(pdev, chip, i);
+		//slot = sdhci_pci_probe_slot(pdev, chip, first_bar, i);
 		if (IS_ERR(slot)) {
 			for (i--; i >= 0; i--)
 				sdhci_pci_remove_slot(chip->slots[i]);
