@@ -104,6 +104,17 @@ static bool ps4_fan_cache_valid(unsigned long updated, bool valid)
 	       time_is_after_jiffies(updated + PS4_FAN_CACHE_JIFFIES);
 }
 
+static int ps4_fan_decode_thresh_c(u8 raw, long *thresh_mc)
+{
+	s8 thresh_c = (s8)raw;
+
+	if (thresh_c < PS4_FAN_THRESH_MIN_C || thresh_c > PS4_FAN_THRESH_MAX_C)
+		return -ERANGE;
+
+	*thresh_mc = (long)thresh_c * 1000L;
+	return 0;
+}
+
 /* ============================================================
  * icc_read_apu_temp - Read live APU temperature
  * ============================================================
@@ -152,12 +163,8 @@ static int icc_read_fan_threshold(long *thresh_mc)
 		return ret;
 	if (reply[PS4_ICC_STATUS_BYTE] != 0x00)
 		return -EIO;
-	if (reply[PS4_FAN_THRESH_BYTE] < PS4_FAN_THRESH_MIN_C ||
-	    reply[PS4_FAN_THRESH_BYTE] > PS4_FAN_THRESH_MAX_C)
-		return -ERANGE;
 
-	*thresh_mc = (long)reply[PS4_FAN_THRESH_BYTE] * 1000L;
-	return 0;
+	return ps4_fan_decode_thresh_c(reply[PS4_FAN_THRESH_BYTE], thresh_mc);
 }
 
 /* ============================================================
@@ -182,14 +189,14 @@ static int icc_write_fan_threshold(long thresh_mc)
 {
 	u8 config[PS4_FAN_CONFIG_REPLY_LEN];
 	u8 reply[0x20];
-	u8 thresh_c;
+	s8 thresh_c;
 	int ret;
 
 	if (thresh_mc < PS4_FAN_THRESH_MIN_MC ||
 	    thresh_mc > PS4_FAN_THRESH_MAX_MC)
 		return -EINVAL;
 
-	thresh_c = (u8)(thresh_mc / 1000L);
+	thresh_c = (s8)(thresh_mc / 1000L);
 
 	/* Step 1: Read current config — preserves factory flags */
 	memset(config, 0, sizeof(config));
@@ -201,7 +208,7 @@ static int icc_write_fan_threshold(long thresh_mc)
 		return -EIO;
 
 	/* Step 2: Modify only the threshold byte */
-	config[PS4_FAN_THRESH_BYTE] = thresh_c;
+	config[PS4_FAN_THRESH_BYTE] = (u8)thresh_c;
 
 	/* Step 3: Write full config back — PS4_FAN_CONFIG_LEN = 52 bytes */
 	memset(reply, 0, sizeof(reply));

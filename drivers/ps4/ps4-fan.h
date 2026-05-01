@@ -17,7 +17,7 @@
  *
  * 0x0A/0x07 — Read thermal configuration (52 bytes)
  *   reply[0]   = ICC status (0x00 = OK)
- *   reply[5]   = fan threshold, integer Celsius (u8)
+ *   reply[5]   = fan threshold, integer Celsius (signed 8-bit)
  *   reply[9]   = factory flag 0x08  — must be preserved on write
  *   reply[12]  = factory flag 0x80  — must be preserved on write
  *   reply[16-27] = 0xff,0xff,0xff,0x0f pattern (sensor slot markers)
