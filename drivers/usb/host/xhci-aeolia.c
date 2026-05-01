@@ -9,6 +9,7 @@
  */
 
 //#define DEBUG
+#include <linux/delay.h>
 #include <linux/pci.h>
 #include <linux/slab.h>
 #include <linux/module.h>
@@ -29,9 +30,74 @@ struct aeolia_xhci {
 static int xhci_aeolia_setup(struct usb_hcd *hcd);
 
 static const struct xhci_driver_overrides xhci_aeolia_overrides __initconst = {
-	.extra_priv_size = sizeof(struct xhci_hcd),
 	.reset = xhci_aeolia_setup,
 };
+
+struct xhci_aeolia_caps {
+	u32 capbase;
+	u32 hcs_params1;
+	u32 hcs_params2;
+	u32 hcc_params;
+	u32 page_size;
+};
+
+static bool xhci_aeolia_is_baikal(struct device *dev)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+
+	return pdev->device == PCI_DEVICE_ID_SONY_BAIKAL_XHCI;
+}
+
+static void xhci_aeolia_read_caps(struct usb_hcd *hcd,
+				  struct xhci_aeolia_caps *caps)
+{
+	struct xhci_cap_regs __iomem *cap = hcd->regs;
+	struct xhci_op_regs __iomem *op;
+
+	memset(caps, 0, sizeof(*caps));
+	if (!cap)
+		return;
+
+	caps->capbase = readl(&cap->hc_capbase);
+	caps->hcs_params1 = readl(&cap->hcs_params1);
+	caps->hcs_params2 = readl(&cap->hcs_params2);
+	caps->hcc_params = readl(&cap->hcc_params);
+
+	op = hcd->regs + HC_LENGTH(caps->capbase);
+	caps->page_size = readl(&op->page_size) & XHCI_PAGE_SIZE_MASK;
+}
+
+static bool xhci_aeolia_caps_suspicious(const struct xhci_aeolia_caps *caps)
+{
+	if (!caps->capbase || caps->capbase == ~0u)
+		return true;
+	if (!caps->hcs_params1 || caps->hcs_params1 == ~0u)
+		return true;
+	if (!caps->hcc_params || caps->hcc_params == ~0u)
+		return true;
+	if (!caps->page_size || caps->page_size == XHCI_PAGE_SIZE_MASK)
+		return true;
+	if (HCS_MAX_PORTS(caps->hcs_params1) > 16)
+		return true;
+	if (HCS_MAX_INTRS(caps->hcs_params1) > 16)
+		return true;
+	if (HCS_MAX_SCRATCHPAD(caps->hcs_params2) > 32)
+		return true;
+
+	return false;
+}
+
+static void xhci_aeolia_log_caps(struct device *dev, const char *tag,
+				 const struct xhci_aeolia_caps *caps)
+{
+	dev_err(dev,
+		"%s capbase=%08x hcs1=%08x hcs2=%08x hcc=%08x pagesz=%x ports=%u intrs=%u scratchpad=%u\n",
+		tag, caps->capbase, caps->hcs_params1, caps->hcs_params2,
+		caps->hcc_params, caps->page_size,
+		HCS_MAX_PORTS(caps->hcs_params1),
+		HCS_MAX_INTRS(caps->hcs_params1),
+		HCS_MAX_SCRATCHPAD(caps->hcs_params2));
+}
 
 static void xhci_aeolia_quirks(struct device *dev, struct xhci_hcd *xhci)
 {
@@ -45,7 +111,46 @@ static void xhci_aeolia_quirks(struct device *dev, struct xhci_hcd *xhci)
 /* called during probe() after chip reset completes */
 static int xhci_aeolia_setup(struct usb_hcd *hcd)
 {
-	return xhci_gen_setup(hcd, xhci_aeolia_quirks);
+	struct device *dev = hcd->self.controller;
+	struct xhci_hcd *xhci = hcd_to_xhci(hcd);
+	struct xhci_aeolia_caps caps;
+	int retval;
+
+	xhci->imod_interval = 40000;
+
+	if (xhci_aeolia_is_baikal(dev)) {
+		xhci_aeolia_read_caps(hcd, &caps);
+		if (xhci_aeolia_caps_suspicious(&caps)) {
+			dev_warn(dev,
+				 "Baikal xHCI caps not ready, waiting 20ms before setup\n");
+			msleep(20);
+		}
+	}
+
+	retval = xhci_gen_setup(hcd, xhci_aeolia_quirks);
+	if (!retval)
+		return 0;
+
+	if (retval == -ENOMEM && xhci_aeolia_is_baikal(dev)) {
+		xhci_aeolia_read_caps(hcd, &caps);
+		if (xhci_aeolia_caps_suspicious(&caps)) {
+			dev_warn(dev,
+				 "Baikal xHCI setup saw unstable caps, retrying: capbase=%08x hcs1=%08x hcs2=%08x hcc=%08x pagesz=%x ports=%u intrs=%u scratchpad=%u\n",
+				 caps.capbase, caps.hcs_params1, caps.hcs_params2,
+				 caps.hcc_params, caps.page_size,
+				 HCS_MAX_PORTS(caps.hcs_params1),
+				 HCS_MAX_INTRS(caps.hcs_params1),
+				 HCS_MAX_SCRATCHPAD(caps.hcs_params2));
+			msleep(20);
+			retval = xhci_gen_setup(hcd, xhci_aeolia_quirks);
+			if (!retval)
+				return 0;
+		}
+	}
+
+	xhci_aeolia_read_caps(hcd, &caps);
+	xhci_aeolia_log_caps(dev, "xHCI setup failed", &caps);
+	return retval;
 }
 
 static bool xhci_aeolia_has_middle_host(struct pci_dev *dev)

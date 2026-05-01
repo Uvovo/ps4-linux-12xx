@@ -269,9 +269,15 @@ EXPORT_SYMBOL(bpcie_assign_irqs);
 
 void bpcie_free_irqs(unsigned int virq, unsigned int nr_irqs)
 {
+	struct msi_desc *desc = irq_get_msi_desc(virq);
+	struct pci_dev *pdev = desc ? msi_desc_to_pci_dev(desc) : NULL;
+
+	if (pdev) {
+		pci_free_irq_vectors(pdev);
+		return;
+	}
+
 	irq_domain_free_irqs(virq, nr_irqs);
-	//pci_free_irq_vectors(sc->pdev);
-	//TODO: remove irqdomains
 }
 EXPORT_SYMBOL(bpcie_free_irqs);
 
