@@ -190,7 +190,7 @@ static void bpcie_msi_domain_set_desc(msi_alloc_info_t *arg,
 	arg->desc = desc;
 	//Our hwirq number is (slot << 8) | (func << 5) plus subfunction.
 	// Subfunction is usually 0 and implicitly increments per hwirq,
-	//but can also be 0xff to indicate that this is a shared IRQ. 
+	//but can also be 0xff to indicate that this is a shared IRQ.
 	arg->hwirq = (PCI_SLOT(dev->devfn) << 8) | (PCI_FUNC(dev->devfn) << 5);
 
 	#ifndef QEMU_HACK_NO_IOMMU
@@ -308,21 +308,21 @@ static void bpcie_create_irq_domains(struct bpcie_dev *sc) {
 static int bpcie_glue_init(struct bpcie_dev *sc)
 {
 	sc_info("bpcie glue probe\n");
-	
-	
+
+
 	if (!request_mem_region(pci_resource_start(sc->pdev, 2), pci_resource_len(sc->pdev, 2),
 				"bpcie.glue")) {
 		sc_err("Failed to request pcie region\n");
 		return -EBUSY;
 
 	}
-	
+
 	if (!request_mem_region(pci_resource_start(sc->pdev, 4), pci_resource_len(sc->pdev, 4),
 				"bpcie.chipid")) {
 		sc_err("Failed to request chipid region\n");
-		
+
 		release_mem_region(pci_resource_start(sc->pdev, 2), pci_resource_len(sc->pdev, 2));
-	
+
 		return -EBUSY;
 	}
 
@@ -347,7 +347,7 @@ static int bpcie_glue_init(struct bpcie_dev *sc)
 		return -EIO;
 	}
 	sc_dbg("dev->irq=%d\n", sc->pdev->irq);
-	
+
 	return 0;
 }
 
@@ -358,12 +358,12 @@ static void bpcie_glue_remove(struct bpcie_dev *sc) {
 		bpcie_free_irqs(sc->pdev->irq, sc->nvec);
 		sc->nvec = 0;
 	}
-	
+
 	if (sc->irqdomain) {
 		irq_domain_remove(sc->irqdomain);//TODO: remove other domains
 		sc->irqdomain = NULL;
 	}
-	
+
 	release_mem_region(pci_resource_start(sc->pdev, 4), pci_resource_len(sc->pdev, 4));
 	release_mem_region(pci_resource_start(sc->pdev, 2), pci_resource_len(sc->pdev, 2));
 }
@@ -521,10 +521,13 @@ static void bpcie_ahci_rmw(void __iomem *mmio, u32 offset, u32 mask, u32 set)
 }
 
 /*
- * The original 5.4 patch carried a decompiled SATA PHY sequence and invoked it
- * with a fixed "usb+ahci" tuning path plus a fixed trace-length selector.
- * Keep that effective behavior, but express it against the current Baikal
- * glue/MMIO objects instead of the old ad hoc scaffolding.
+ * Baikal uses two closely-related SATA PHY init paths:
+ * - xHCI/shared AHCI BAR uses the "usb+ahci" tuning window.
+ * - dedicated AHCI function uses the pure AHCI tuning window.
+ * - KHEOPS XD - A group of fucking french retards renaming kernels n mesa builds "GLADIUS BLACKSCREEN FIX"
+ * The 5.4 driver selected different glue offsets and efuse fields depending
+ * on which function invoked the sequence. Keep that split here so the shared
+ * xHCI seed path and the dedicated AHCI path stop stepping on each other.
  */
 int bpcie_sata_phy_init(struct pci_dev *pdev, void __iomem *ahci_mmio)
 {
@@ -534,7 +537,10 @@ int bpcie_sata_phy_init(struct pci_dev *pdev, void __iomem *ahci_mmio)
 	u32 tune0 = 40;
 	u32 tune1 = 16;
 	u32 tune2 = 16;
+	u32 pulse_offset;
+	u32 hold_offset;
 	u32 status;
+	bool shared_path;
 	int ret = 0;
 
 	if (!pdev || pdev->vendor != PCI_VENDOR_ID_SONY || !ahci_mmio)
@@ -562,23 +568,32 @@ int bpcie_sata_phy_init(struct pci_dev *pdev, void __iomem *ahci_mmio)
 
 	dev_info(&pdev->dev, "Baikal SATA PHY init\n");
 
-	/*
-	 * Preserve the effective 5.4 Baikal tuning. The original path touched
-	 * the shared AHCI BAR from the xHCI function before bringing USB up,
-	 * and the same register sequence is safe from the dedicated AHCI
-	 * function in the split 7.0 port as well.
-	 */
-	glue_write32(sc, BPCIE_USB_BASE + 112, 1);
-	glue_write32(sc, BPCIE_USB_BASE + 48, 1);
-	glue_write32(sc, BPCIE_USB_BASE + 112, 0);
+	shared_path = pdev->device == PCI_DEVICE_ID_SONY_BAIKAL_XHCI;
+	if (shared_path) {
+		pulse_offset = 112;
+		hold_offset = 48;
+	} else {
+		pulse_offset = 108;
+		hold_offset = 44;
+	}
+
+	glue_write32(sc, BPCIE_USB_BASE + pulse_offset, 1);
+	glue_write32(sc, BPCIE_USB_BASE + hold_offset, 1);
+	glue_write32(sc, BPCIE_USB_BASE + pulse_offset, 0);
 
 	efuse0 = ioread32(sc->bar4 + 0xC000 + 72);
 	efuse1 = ioread32(sc->bar4 + 0xC000 + 108);
 
-	if (efuse1 & BIT(26)) {
-		tune0 = (efuse0 >> 16) & 0x3f;
-		tune1 = (efuse0 >> 22) & 0x1f;
-		tune2 = efuse0 >> 27;
+	if (shared_path) {
+		if (efuse1 & BIT(26)) {
+			tune0 = (efuse0 >> 16) & 0x3f;
+			tune1 = (efuse0 >> 22) & 0x1f;
+			tune2 = efuse0 >> 27;
+		}
+	} else if (efuse1 & BIT(18)) {
+		tune0 = efuse0 & 0x3f;
+		tune1 = (efuse0 >> 6) & 0x1f;
+		tune2 = efuse0 >> 11;
 	}
 
 	dev_info(&pdev->dev, "Baikal SATA EFUSE VALUE: 0x%02x:0x%02x:0x%02x\n",
@@ -614,7 +629,12 @@ int bpcie_sata_phy_init(struct pci_dev *pdev, void __iomem *ahci_mmio)
 	bpcie_ahci_rmw(ahci_mmio, 0x20DC, 0xFFFFE0FF, 0x400);
 	iowrite32(ioread32(ahci_mmio + 0x2024) | 0x30, ahci_mmio + 0x2024);
 
-	glue_write32(sc, BPCIE_USB_BASE + 48, 0);
+	/*
+	 * The 5.4 Baikal sequence releases the per-path USB/AHCI hold line
+	 * only after all PHY tuning writes land. Keeping it asserted strands
+	 * the shared xHCI/AHCI block before the first status poll.
+	 */
+	glue_write32(sc, BPCIE_USB_BASE + hold_offset, 0);
 	readl_poll_timeout_atomic(ahci_mmio + 0xDC, status, status & 0x1,
 				  10, 1000);
 

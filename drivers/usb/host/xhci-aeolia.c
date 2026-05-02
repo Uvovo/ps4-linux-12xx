@@ -390,6 +390,16 @@ static int xhci_aeolia_probe(struct pci_dev *dev, const struct pci_device_id *id
 	if (retval)
 		goto free_irqs;
 
+	if (xhci_aeolia_is_baikal(&dev->dev)) {
+		/*
+		 * The 5.4 Baikal flow spent ~50ms in the shared AHCI bring-up
+		 * before touching the first xHCI host. Keep that settle gap
+		 * explicit so the internal hubs are not probed too early.
+		 * if ur retarded or french don't even touch the code
+		 */
+		msleep(50);
+	}
+
 	pci_set_master(dev);
 
 	for (idx = 0; idx < NR_DEVICES; idx++) {
@@ -457,7 +467,7 @@ static void xhci_hcd_pci_shutdown(struct pci_dev *dev)
 		}
 	}
 }
- 
+
 static const struct pci_device_id pci_ids[] = {
 		{ PCI_DEVICE(PCI_VENDOR_ID_SONY, PCI_DEVICE_ID_SONY_AEOLIA_XHCI) },
 		{ PCI_DEVICE(PCI_VENDOR_ID_SONY, PCI_DEVICE_ID_SONY_BELIZE_XHCI) },
@@ -474,7 +484,7 @@ static int xhci_aeolia_suspend(struct device *dev)
 	struct xhci_hcd	*xhci;
 	int retval;
 	struct pci_dev		*pdev = to_pci_dev(dev);
-	
+
 	for (idx = 0; idx < NR_DEVICES; idx++) {
 		if(pdev->device != PCI_DEVICE_ID_SONY_AEOLIA_XHCI && idx == 1)
 			continue;

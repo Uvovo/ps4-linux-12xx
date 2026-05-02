@@ -1929,6 +1929,27 @@ static ssize_t remapped_nvme_show(struct device *dev,
 
 static DEVICE_ATTR_RO(remapped_nvme);
 
+#ifdef CONFIG_X86_PS4
+static bool ahci_baikal_shared_phy_seeded(struct pci_dev *pdev)
+{
+	struct pci_dev *xhci;
+	bool seeded = false;
+
+	xhci = pci_get_slot(pdev->bus, (pdev->devfn & ~0x7) | 7);
+	if (!xhci)
+		return false;
+
+	if (xhci->vendor == PCI_VENDOR_ID_SONY &&
+	    xhci->device == PCI_DEVICE_ID_SONY_BAIKAL_XHCI &&
+	    xhci->dev.driver &&
+	    !strcmp(xhci->dev.driver->name, "xhci_aeolia"))
+		seeded = true;
+
+	pci_dev_put(xhci);
+	return seeded;
+}
+#endif
+
 static int ahci_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	unsigned int board_id = ent->driver_data;
@@ -2051,9 +2072,14 @@ static int ahci_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 #ifdef CONFIG_X86_PS4
 	if (pdev->vendor == PCI_VENDOR_ID_SONY &&
 	    pdev->device == PCI_DEVICE_ID_SONY_BAIKAL_AHCI) {
-		rc = bpcie_sata_phy_init(pdev, hpriv->mmio);
-		if (rc)
-			goto err_rm_sysfs_file;
+		if (!ahci_baikal_shared_phy_seeded(pdev)) {
+			rc = bpcie_sata_phy_init(pdev, hpriv->mmio);
+			if (rc)
+				goto err_rm_sysfs_file;
+		} else {
+			dev_dbg(&pdev->dev,
+				"Baikal xHCI sibling already initialized SATA PHY\n");
+		}
 	}
 #endif
 
