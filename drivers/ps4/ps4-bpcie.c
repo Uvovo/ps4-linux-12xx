@@ -537,8 +537,11 @@ int bpcie_sata_phy_init(struct pci_dev *pdev, void __iomem *ahci_mmio)
 	u32 status;
 	int ret = 0;
 
-	if (!pdev || pdev->vendor != PCI_VENDOR_ID_SONY ||
-	    pdev->device != PCI_DEVICE_ID_SONY_BAIKAL_AHCI || !ahci_mmio)
+	if (!pdev || pdev->vendor != PCI_VENDOR_ID_SONY || !ahci_mmio)
+		return 0;
+
+	if (pdev->device != PCI_DEVICE_ID_SONY_BAIKAL_AHCI &&
+	    pdev->device != PCI_DEVICE_ID_SONY_BAIKAL_XHCI)
 		return 0;
 
 	glue_dev = pci_get_slot(pdev->bus,
@@ -560,8 +563,10 @@ int bpcie_sata_phy_init(struct pci_dev *pdev, void __iomem *ahci_mmio)
 	dev_info(&pdev->dev, "Baikal SATA PHY init\n");
 
 	/*
-	 * Preserve the effective 5.4 port behavior: the call site always used
-	 * the usb+ahci path and a fixed trace-length selector equivalent to 4.
+	 * Preserve the effective 5.4 Baikal tuning. The original path touched
+	 * the shared AHCI BAR from the xHCI function before bringing USB up,
+	 * and the same register sequence is safe from the dedicated AHCI
+	 * function in the split 7.0 port as well.
 	 */
 	glue_write32(sc, BPCIE_USB_BASE + 112, 1);
 	glue_write32(sc, BPCIE_USB_BASE + 48, 1);
@@ -576,8 +581,7 @@ int bpcie_sata_phy_init(struct pci_dev *pdev, void __iomem *ahci_mmio)
 		tune2 = efuse0 >> 27;
 	}
 
-	dev_info(&pdev->dev,
-		 "Baikal SATA EFUSE tuning: 0x%02x:0x%02x:0x%02x\n",
+	dev_info(&pdev->dev, "Baikal SATA EFUSE VALUE: 0x%02x:0x%02x:0x%02x\n",
 		 tune0, tune1, tune2);
 	dev_info(&pdev->dev, "Baikal SATA PHY Trace length : %d\n", 4);
 

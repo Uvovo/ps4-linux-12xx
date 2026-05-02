@@ -218,6 +218,43 @@ static int xhci_aeolia_irqnum(struct aeolia_xhci *axhci,
 	return dev->irq + index;
 }
 
+static int xhci_aeolia_init_baikal_sata(struct pci_dev *dev)
+{
+	resource_size_t rsrc_start;
+	resource_size_t rsrc_len;
+	void __iomem *mmio;
+	int ret;
+
+	if (!xhci_aeolia_is_baikal(&dev->dev))
+		return 0;
+
+	rsrc_start = pci_resource_start(dev, 2);
+	rsrc_len = pci_resource_len(dev, 2);
+	if (!rsrc_start || !rsrc_len) {
+		dev_err(&dev->dev, "Baikal AHCI BAR missing on xHCI function\n");
+		return -ENODEV;
+	}
+
+	if (!devm_request_mem_region(&dev->dev, rsrc_start, rsrc_len,
+				     "xhci-aeolia-ahci")) {
+		dev_dbg(&dev->dev, "Baikal AHCI BAR already in use\n");
+		return -EBUSY;
+	}
+
+	mmio = pci_ioremap_bar(dev, 2);
+	if (!mmio) {
+		ret = -EFAULT;
+		goto release_mem_region;
+	}
+
+	ret = bpcie_sata_phy_init(dev, mmio);
+	iounmap(mmio);
+
+release_mem_region:
+	devm_release_mem_region(&dev->dev, rsrc_start, rsrc_len);
+	return ret;
+}
+
 static int xhci_aeolia_probe_one(struct pci_dev *dev, int index)
 {
 	int retval;
@@ -227,8 +264,13 @@ static int xhci_aeolia_probe_one(struct pci_dev *dev, int index)
 	struct xhci_hcd *xhci;
 	int irq = xhci_aeolia_irqnum(axhci, dev, index);
 
-	dev_dbg(&dev->dev, "xhci_aeolia_probe_one %d controller %04x\n",
-		index, dev->device);
+	if (xhci_aeolia_is_baikal(&dev->dev))
+		dev_info(&dev->dev,
+			 "xhci_aeolia_probe_one %d controller %04x irq %d\n",
+			 index, dev->device, irq);
+	else
+		dev_dbg(&dev->dev, "xhci_aeolia_probe_one %d controller %04x\n",
+			index, dev->device);
 
 	hcd = usb_create_hcd(driver, &dev->dev, pci_name(dev));
 	pci_set_drvdata(dev, axhci); /* usb_create_hcd clobbers this */
@@ -327,7 +369,12 @@ static int xhci_aeolia_probe(struct pci_dev *dev, const struct pci_device_id *id
 	}
 	pci_set_drvdata(dev, axhci);
 
-	axhci->nr_irqs = retval = apcie_assign_irqs(dev, NR_DEVICES);
+	if (xhci_aeolia_is_baikal(&dev->dev))
+		axhci->nr_irqs = retval = pci_alloc_irq_vectors(dev, NR_DEVICES,
+							NR_DEVICES,
+							PCI_IRQ_MSIX | PCI_IRQ_MSI);
+	else
+		axhci->nr_irqs = retval = apcie_assign_irqs(dev, NR_DEVICES);
 	if (retval < 0) {
 		goto free_axhci;
 	}
@@ -339,6 +386,10 @@ static int xhci_aeolia_probe(struct pci_dev *dev, const struct pci_device_id *id
 	if (retval)
 		goto free_irqs;
 
+	retval = xhci_aeolia_init_baikal_sata(dev);
+	if (retval)
+		goto free_irqs;
+
 	pci_set_master(dev);
 
 	for (idx = 0; idx < NR_DEVICES; idx++) {
@@ -347,6 +398,8 @@ static int xhci_aeolia_probe(struct pci_dev *dev, const struct pci_device_id *id
 		retval = xhci_aeolia_probe_one(dev, idx);
 		if (retval)
 			goto remove_hcds;
+		if (xhci_aeolia_is_baikal(&dev->dev))
+			msleep(20);
 	}
 
 	return 0;

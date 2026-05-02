@@ -37,11 +37,23 @@
 static void amdgpu_maybe_add_bridge(struct drm_connector *connector,
 				    struct drm_encoder *encoder)
 {
-	struct drm_device *dev = connector->dev;
-	struct amdgpu_device *adev = dev->dev_private;
+	struct drm_device *dev;
+	struct amdgpu_device *adev;
+	int ret;
+
+	if (!connector || !encoder)
+		return;
+
+	dev = connector->dev;
+	if (!dev)
+		return;
+
+	adev = drm_to_adev(dev);
 
 	if (adev->asic_type == CHIP_LIVERPOOL || adev->asic_type == CHIP_GLADIUS) {
-		ps4_bridge_register(connector, encoder);
+		ret = ps4_bridge_register(connector, encoder);
+		if (ret)
+			DRM_ERROR("Failed to register PS4 bridge: %d\n", ret);
 	}
 }
 #endif
