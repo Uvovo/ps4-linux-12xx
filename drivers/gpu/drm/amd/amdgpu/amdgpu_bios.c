@@ -436,6 +436,31 @@ static inline bool amdgpu_acpi_vfct_bios(struct amdgpu_device *adev)
 
 static bool amdgpu_get_bios_apu(struct amdgpu_device *adev)
 {
+	/*
+	 * PS4 Pro (0x9924): semi-custom Polaris10 with no option ROM BAR and
+	 * no GOP. The console BIOS may leave a copy of the VBIOS shadow at
+	 * the start of VRAM (same as normal APU/IGP behaviour).
+	 * Try VRAM first; if that also fails, return false *silently* —
+	 * the caller marks VBIOS as OPTIONAL for this device so a missing
+	 * BIOS is expected and handled upstream without an error log.
+	 */
+	if (adev->pdev->device == 0x9924) {
+		if (amdgpu_read_bios_from_vram(adev)) {
+			dev_info(adev->dev,
+				 "PS4 Pro: fetched VBIOS from VRAM shadow\n");
+			return true;
+		}
+		if (amdgpu_acpi_vfct_bios(adev)) {
+			dev_info(adev->dev,
+				 "PS4 Pro: fetched VBIOS from VFCT\n");
+			return true;
+		}
+		/* No BIOS found — that is OK, VBIOS is optional for PS4 Pro */
+		dev_info(adev->dev,
+			 "PS4 Pro: no VBIOS found, continuing without it\n");
+		return false;
+	}
+
 	if (amdgpu_acpi_vfct_bios(adev)) {
 		dev_info(adev->dev, "Fetched VBIOS from VFCT\n");
 		goto success;
