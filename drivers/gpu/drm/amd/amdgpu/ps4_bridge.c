@@ -44,6 +44,7 @@
 #include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/i2c-algo-bit.h>
+#include <linux/firmware.h>
 
 
 #include "amdgpu.h"
@@ -962,6 +963,31 @@ int ps4_bridge_get_modes(struct drm_connector *connector)
 	amdgpu_connector->edid = NULL;
 	drm_connector_update_edid_property(connector, NULL);
 
+	/*
+	 * Try the payload-dumped EDID first. The payload extracts it from
+	 * kern.edid on every boot and stores it at lib/firmware/edid/my_edid.bin
+	 * in the firmware CPIO prepended to the initramfs. Using it avoids
+	 * the unreliable PS4 DDC/I2C path while still reflecting the actual
+	 * connected monitor's capabilities.
+	 */
+	{
+		const struct firmware *fw = NULL;
+
+		if (request_firmware(&fw, "edid/my_edid.bin",
+				      connector->dev->dev) == 0 && fw) {
+			DRM_DEBUG_KMS("ps4_bridge_get_modes: using firmware EDID "
+				      "(%zu bytes)\n", fw->size);
+			drm_edid = drm_edid_alloc(fw->data, fw->size);
+			release_firmware(fw);
+		} else {
+			DRM_DEBUG_KMS("ps4_bridge_get_modes: no firmware EDID "
+				      "(edid/my_edid.bin), falling back to DDC\n");
+		}
+	}
+
+	if (drm_edid)
+		goto edid_ready;
+
 	if (!amdgpu_connector->ddc_bus) {
 		DRM_DEBUG_KMS("ps4_bridge_get_modes: no DDC bus, using fallback modes\n");
 		goto fallback_modes;
@@ -1023,6 +1049,7 @@ int ps4_bridge_get_modes(struct drm_connector *connector)
 		}
 	}
 
+edid_ready:
 	if (drm_edid) {
 		raw_edid = drm_edid_raw(drm_edid);
 		amdgpu_connector->edid = drm_edid_duplicate(raw_edid);
