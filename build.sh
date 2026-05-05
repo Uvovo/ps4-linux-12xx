@@ -3,7 +3,7 @@
 # PS4-Linux Strawberry Builder
 # Supports two PS4-focused build profiles and two LTO flavors:
 #   server  — headless/services, HZ=250, PREEMPT_VOLUNTARY, performance governor
-#   general — desktop/gaming, HZ=250, PREEMPT=y, BORE, schedutil/reflex
+#   general — desktop/gaming, HZ=250, PREEMPT=y, schedutil/reflex
 #   ThinLTO / FullLTO selectable via lto=ThinLTO or lto=FullLTO
 #
 # Usage:
@@ -514,7 +514,6 @@ if [[ "$DO_BUILD" == "1" ]]; then
     if [[ "$PROFILE" == "server" ]]; then
         echo -e "\e[1;34m[*]\e[0m Applying server profile..."
 
-        scripts/config --disable CONFIG_SCHED_BORE
         scripts/config --disable CONFIG_SCHED_AUTOGROUP
         scripts/config --disable CONFIG_CPU_FREQ_GOV_REFLEX
 
@@ -574,9 +573,6 @@ if [[ "$DO_BUILD" == "1" ]]; then
         scripts/config --enable  CONFIG_DMIID
         scripts/config --enable  CONFIG_DMI_SYSFS
         scripts/config --enable  CONFIG_FW_CFG_SYSFS
-
-        scripts/config --enable  CONFIG_SCHED_BORE
-        scripts/config --set-val CONFIG_MIN_BASE_SLICE_NS 2000000
 
         scripts/config --enable  CONFIG_CPU_FREQ_GOV_REFLEX
         scripts/config --enable  CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL
