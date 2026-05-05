@@ -33,21 +33,29 @@ static __init inline void emctimer_write32(unsigned int reg, u32 val)
 	iowrite32(val, emc_timer + reg);
 }
 
-static __init inline u32 emctimer_read(void)
+static __init bool emctimer_read(u32 *value)
 {
 	u32 t1, t2;
+	int tries;
+
 	t1 = emctimer_read32(EMC_TIMER_VALUE);
-	while (1) {
+	for (tries = 0; tries < 10000; tries++) {
 		t2 = emctimer_read32(EMC_TIMER_VALUE);
-		if (t1 == t2)
-			return t1;
+		if (t1 == t2) {
+			*value = t1;
+			return true;
+		}
 		t1 = t2;
 	}
+
+	*value = t1;
+	return false;
 }
 
 static __init unsigned long ps4_measure_tsc_freq(void)
 {
 	unsigned long ret = 0;
+	u32 now;
 	u32 t1, t2;
 	u64 tsc1, tsc2;
 
@@ -65,10 +73,20 @@ static __init unsigned long ps4_measure_tsc_freq(void)
 	emctimer_write32(0x00, emctimer_read32(0x00) | 0x01);
 	emctimer_write32(0x84, emctimer_read32(0x84) | 0x01);
 
-	t1 = emctimer_read();
+	if (!emctimer_read(&t1)) {
+		pr_warn("EMC timer did not stabilize.\n");
+		goto fail;
+	}
 	tsc1 = tsc2 = rdtsc();
 
-	while (emctimer_read() == t1) {
+	for (;;) {
+		if (!emctimer_read(&now)) {
+			pr_warn("EMC timer did not stabilize.\n");
+			goto fail;
+		}
+		if (now != t1)
+			break;
+
 		// 0.1s timeout should be enough
 		tsc2 = rdtsc();
 		if ((tsc2 - tsc1) > (PS4_DEFAULT_TSC_FREQ/10)) {
@@ -79,15 +97,30 @@ static __init unsigned long ps4_measure_tsc_freq(void)
 	pr_info("EMC timer started in %lld TSC ticks\n", tsc2 - tsc1);
 
 	// Wait for a tick boundary
-	t1 = emctimer_read();
-	while ((t2 = emctimer_read()) == t1);
+	if (!emctimer_read(&t1)) {
+		pr_warn("EMC timer did not stabilize.\n");
+		goto fail;
+	}
+	do {
+		if (!emctimer_read(&t2)) {
+			pr_warn("EMC timer did not stabilize.\n");
+			goto fail;
+		}
+	} while (t2 == t1);
 	tsc1 = rdtsc();
 
 	// Wait for 1024 ticks to elapse (31.25ms)
 	// We don't need to wait very long, as we are looking for transitions.
 	// At this value, a TSC uncertainty of ~50 ticks corresponds to 1ppm of
 	// clock accuracy.
-	while ((emctimer_read() - t2) < 1024);
+	for (;;) {
+		if (!emctimer_read(&now)) {
+			pr_warn("EMC timer did not stabilize.\n");
+			goto fail;
+		}
+		if ((now - t2) >= 1024)
+			break;
+	}
 	tsc2 = rdtsc();
 
 	// TSC rate is 32 times the elapsed time
