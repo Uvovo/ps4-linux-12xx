@@ -28,6 +28,16 @@ static const int subfuncs_per_func[AEOLIA_NUM_FUNCS] = {
 	4, 4, 4, 4, 31, 2, 2, 4
 };
 
+struct apcie_irq_data {
+	struct apcie_dev *sc;
+	u8 msi_data;
+};
+
+struct apcie_msi_domain_ctx {
+	struct irq_chip controller;
+	struct msi_domain_info info;
+};
+
 static inline u32 glue_read32(struct apcie_dev *sc, u32 offset) {
 	return ioread32(sc->bar4 + offset);
 }
@@ -109,7 +119,8 @@ static void apcie_config_msi(struct apcie_dev *sc, u32 func, u32 subfunc,
 
 static void apcie_msi_write_msg(struct irq_data *data, struct msi_msg *msg)
 {
-	struct apcie_dev *sc = data->chip_data;
+	struct apcie_irq_data *irq_data = data->chip_data;
+	struct apcie_dev *sc = irq_data->sc;
 	u32 func = data->hwirq >> 8;
 	u32 subfunc = data->hwirq & 0xff;
 
@@ -134,7 +145,8 @@ static void apcie_msi_write_msg(struct irq_data *data, struct msi_msg *msg)
 
 static void apcie_msi_unmask(struct irq_data *data)
 {
-	struct apcie_dev *sc = data->chip_data;
+	struct apcie_irq_data *irq_data = data->chip_data;
+	struct apcie_dev *sc = irq_data->sc;
 	u32 func = data->hwirq >> 8;
 
 	glue_set_mask(sc, APCIE_REG_MSI_MASK(func), data->mask);
@@ -142,7 +154,8 @@ static void apcie_msi_unmask(struct irq_data *data)
 
 static void apcie_msi_mask(struct irq_data *data)
 {
-	struct apcie_dev *sc = data->chip_data;
+	struct apcie_irq_data *irq_data = data->chip_data;
+	struct apcie_dev *sc = irq_data->sc;
 	u32 func = data->hwirq >> 8;
 
 	glue_clear_mask(sc, APCIE_REG_MSI_MASK(func), data->mask);
@@ -162,32 +175,18 @@ static void apcie_msi_calc_mask(struct irq_data *data) {
 static void apcie_irq_msi_compose_msg(struct irq_data *data,
 				       struct msi_msg *msg)
 {
+	struct apcie_irq_data *irq_data = data->chip_data;
 	struct irq_cfg *cfg __maybe_unused = irqd_cfg(data);
 
 	memset(msg, 0, sizeof(*msg));
 	msg->address_hi = X86_MSI_BASE_ADDRESS_HIGH;
 	msg->address_lo = 0xfee00000;// Just do it like this for now
-
-	// I know this is absolute horseshit, but it matches a known working kernel
-	{
-		struct apcie_dev *sc = data->chip_data;
-		int i;
-
-		msg->data = data->irq - 1;
-		if (sc) {
-			for (i = 0; i < ARRAY_SIZE(sc->irq_map); i++) {
-				if (sc->irq_map[i] == data->irq) {
-					msg->data = i;
-					break;
-				}
-			}
-		}
-	}
+	msg->data = irq_data ? irq_data->msi_data : data->irq - 1;
 
 	pr_debug("apcie_irq_msi_compose_msg\n");
 }
 
-static struct irq_chip apcie_msi_controller = {
+static const struct irq_chip apcie_msi_controller_template = {
 	.name = "Aeolia-MSI",
 	.irq_unmask = apcie_msi_unmask,
 	.irq_mask = apcie_msi_mask,
@@ -210,27 +209,42 @@ static int apcie_msi_init(struct irq_domain *domain,
 			 irq_hw_number_t hwirq, msi_alloc_info_t *arg)
 {
 	struct irq_data *data;
+	struct apcie_irq_data *irq_data;
 	struct apcie_dev *sc = info->chip_data;
 	int i;
+	int slot = -1;
 
 	pr_debug("apcie_msi_init(%p, %p, %d, 0x%lx, %p)\n",
 		 domain, info, virq, hwirq, arg);
 
+	if (sc) {
+		for (i = 0; i < ARRAY_SIZE(sc->irq_map); i++) {
+			if (sc->irq_map[i] == -1) {
+				slot = i;
+				break;
+			}
+		}
+
+		if (slot < 0) {
+			pr_err("apcie_msi_init: no free irq_map entry for virq %u\n", virq);
+			return -ENOSPC;
+		}
+	}
+
+	irq_data = kzalloc(sizeof(*irq_data), GFP_KERNEL);
+	if (!irq_data)
+		return -ENOMEM;
+
+	irq_data->sc = sc;
+	irq_data->msi_data = slot >= 0 ? slot : virq - 1;
+
 	data = irq_domain_get_irq_data(domain, virq);
-	irq_domain_set_info(domain, virq, hwirq, info->chip, info->chip_data,
+	irq_domain_set_info(domain, virq, hwirq, info->chip, irq_data,
 			    handle_edge_irq, NULL, "edge");
 	apcie_msi_calc_mask(data);
 
 	if (sc) {
-		for (i = 0; i < ARRAY_SIZE(sc->irq_map); i++) {
-			if (sc->irq_map[i] == -1) {
-				sc->irq_map[i] = virq;
-				return 0;
-			}
-		}
-
-		pr_err("apcie_msi_init: no free irq_map entry for virq %u\n", virq);
-		return -ENOSPC;
+		sc->irq_map[slot] = virq;
 	}
 
 	return 0;
@@ -239,8 +253,13 @@ static int apcie_msi_init(struct irq_domain *domain,
 static void apcie_msi_free(struct irq_domain *domain,
 			  struct msi_domain_info *info, unsigned int virq)
 {
+	struct irq_data *data;
+	struct apcie_irq_data *irq_data;
 	struct apcie_dev *sc = info->chip_data;
 	int i;
+
+	data = irq_domain_get_irq_data(domain, virq);
+	irq_data = data ? data->chip_data : NULL;
 
 	if (sc) {
 		for (i = 0; i < ARRAY_SIZE(sc->irq_map); i++) {
@@ -252,13 +271,16 @@ static void apcie_msi_free(struct irq_domain *domain,
 	}
 
 	pr_debug("apcie_msi_free(%d)\n", virq);
+	kfree(irq_data);
 }
 
 
 static void apcie_set_desc(msi_alloc_info_t *arg, struct msi_desc *desc)
 {
+	struct pci_dev *device;
+
 	arg->desc = desc;
-	struct pci_dev* device = msi_desc_to_pci_dev(desc);
+	device = msi_desc_to_pci_dev(desc);
 
 	arg->hwirq = PCI_FUNC(device->devfn) << 8;
 
@@ -274,16 +296,16 @@ static struct msi_domain_ops apcie_msi_domain_ops = {
 	.msi_free	= apcie_msi_free,
 };
 
-static struct msi_domain_info apcie_msi_domain_info = {
+static const struct msi_domain_info apcie_msi_domain_info_template = {
 	.flags		= MSI_FLAG_USE_DEF_DOM_OPS | MSI_FLAG_USE_DEF_CHIP_OPS,
 	.ops		= &apcie_msi_domain_ops,
-	.chip		= &apcie_msi_controller,
 	.handler	= handle_edge_irq,
 	.handler_name	= "edge"
 };
 
 static struct irq_domain *apcie_create_irq_domain(struct apcie_dev *sc)
 {
+	struct apcie_msi_domain_ctx *ctx;
 	struct irq_domain *domain, *parent;
 	struct fwnode_handle *fn;
 	struct irq_fwspec fwspec;
@@ -292,10 +314,18 @@ static struct irq_domain *apcie_create_irq_domain(struct apcie_dev *sc)
 	if (x86_vector_domain == NULL)
 		return NULL;
 
-	apcie_msi_domain_info.chip_data = (void *)sc;
+	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+	if (!ctx)
+		return NULL;
 
-	fn = irq_domain_alloc_named_id_fwnode(apcie_msi_controller.name, pci_dev_id(sc->pdev));
+	ctx->controller = apcie_msi_controller_template;
+	ctx->info = apcie_msi_domain_info_template;
+	ctx->info.chip = &ctx->controller;
+	ctx->info.chip_data = sc;
+
+	fn = irq_domain_alloc_named_id_fwnode(ctx->controller.name, pci_dev_id(sc->pdev));
 	if (!fn) {
+		kfree(ctx);
 		return NULL;
 	}
 
@@ -314,16 +344,19 @@ static struct irq_domain *apcie_create_irq_domain(struct apcie_dev *sc)
 	} else if (parent == x86_vector_domain) {
 		sc_dbg("no parent \n");
 	} else {
-		apcie_msi_domain_info.flags |= MSI_FLAG_MULTI_PCI_MSI;
-		apcie_msi_controller.name = "IR-Aeolia-MSI";
+		ctx->info.flags |= MSI_FLAG_MULTI_PCI_MSI;
+		ctx->controller.name = "IR-Aeolia-MSI";
 	}
 
-	domain = msi_create_irq_domain(fn, &apcie_msi_domain_info, parent);
+	domain = msi_create_irq_domain(fn, &ctx->info, parent);
 	if (!domain) {
 		irq_domain_free_fwnode(fn);
+		kfree(ctx);
 		pr_warn("Failed to initialize Aeolia-MSI irqdomain.\n");
+		return NULL;
 	}
 
+	sc->msi_domain_ctx = ctx;
 	return domain;
 }
 
@@ -343,7 +376,10 @@ int apcie_assign_irqs(struct pci_dev *dev, int nvec)
 	unsigned int sc_devfn;
 	struct pci_dev *sc_dev;
 	struct apcie_dev *sc;
+	struct device *bare_dev;
+	struct msi_desc *desc;
 	struct irq_alloc_info info;
+	unsigned int desc_first;
 
 	sc_devfn = (dev->devfn & ~7) | AEOLIA_FUNC_ID_PCIE;
 	sc_dev = pci_get_slot(dev->bus, sc_devfn);
@@ -365,10 +401,7 @@ int apcie_assign_irqs(struct pci_dev *dev, int nvec)
 	/* IRQs "come from" function 4 as far as the IOMMU/system see */
 	//info.msi_dev = sc->pdev;
 	info.devid = pci_dev_id(sc->pdev);
-
-	/*int i, base = 0; -- unused */
-	struct msi_desc *desc;
-	struct device* bare_dev = &sc->pdev->dev;
+	bare_dev = &sc->pdev->dev;
 
 	/* Our hwirq number is function << 8 plus subfunction.
 	 * Subfunction is usually 0 and implicitly increments per hwirq,
@@ -376,7 +409,7 @@ int apcie_assign_irqs(struct pci_dev *dev, int nvec)
 	info.hwirq = PCI_FUNC(dev->devfn) << 8;
 
 #ifndef QEMU_HACK_NO_IOMMU
-	if (!(apcie_msi_domain_info.flags & MSI_FLAG_MULTI_PCI_MSI)) {
+	if (!(sc->msi_domain_ctx->info.flags & MSI_FLAG_MULTI_PCI_MSI)) {
 		nvec = 1;
 		info.hwirq |= 0xff; /* Shared IRQ for all subfunctions */
 	}
@@ -387,6 +420,7 @@ int apcie_assign_irqs(struct pci_dev *dev, int nvec)
 		ret = -ENOMEM;
 		goto fail;
 	}
+	desc_first = desc->msi_index;
 
 	info.desc = desc;
 	info.data = sc;
@@ -399,6 +433,9 @@ int apcie_assign_irqs(struct pci_dev *dev, int nvec)
 		dev->irq = ret;
 		desc->irq = ret;
 		ret = nvec;
+	} else {
+		msi_free_msi_descs_range(bare_dev, desc_first,
+					 desc_first + nvec - 1);
 	}
 
 fail:
@@ -502,6 +539,8 @@ static void apcie_glue_remove(struct apcie_dev *sc) {
 		irq_domain_remove(sc->irqdomain);
 		sc->irqdomain = NULL;
 	}
+	kfree(sc->msi_domain_ctx);
+	sc->msi_domain_ctx = NULL;
 	release_mem_region(pci_resource_start(sc->pdev, 2) +
 			   APCIE_RGN_CHIPID_BASE, APCIE_RGN_CHIPID_SIZE);
 	release_mem_region(pci_resource_start(sc->pdev, 4) +
@@ -577,7 +616,7 @@ static int apcie_probe(struct pci_dev *dev, const struct pci_device_id *id) {
 	if ((ret = apcie_icc_init(sc)) < 0)
 		goto remove_glue;
 
-	apcie_initialized = true;
+	WRITE_ONCE(apcie_initialized, true);
 	return 0;
 
 /* remove_uart:
@@ -601,6 +640,7 @@ static void apcie_remove(struct pci_dev *dev) {
 	struct apcie_dev *sc;
 	sc = pci_get_drvdata(dev);
 
+	WRITE_ONCE(apcie_initialized, false);
 	apcie_icc_remove(sc);
 	apcie_uart_remove(sc);
 	apcie_glue_remove(sc);

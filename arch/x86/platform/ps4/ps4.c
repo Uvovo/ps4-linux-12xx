@@ -52,7 +52,7 @@ int apcie_status(void)
 {
 	if (!is_ps4)
 		return -ENODEV;
-	return apcie_initialized;
+	return READ_ONCE(apcie_initialized);
 }
 EXPORT_SYMBOL_GPL(apcie_status);
 
