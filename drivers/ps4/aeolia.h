@@ -5,6 +5,8 @@
 #include <linux/pci.h>
 #include <linux/i2c.h>
 
+struct apcie_msi_domain_ctx;
+
 enum aeolia_func_id {
 	AEOLIA_FUNC_ID_ACPI = 0,
 	AEOLIA_FUNC_ID_GBE,
@@ -142,6 +144,7 @@ struct apcie_icc_dev {
 struct apcie_dev {
 	struct pci_dev *pdev;
 	struct irq_domain *irqdomain;
+	struct apcie_msi_domain_ctx *msi_domain_ctx;
 	void __iomem *bar0;
 	void __iomem *bar2;
 	void __iomem *bar4;
