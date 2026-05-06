@@ -12,6 +12,7 @@
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/acpi.h>
+#include <linux/delay.h>
 #include <asm/ps4.h>
 #include "xhci-aeolia.h"
 #include "../../ps4/aeolia.h"
@@ -61,10 +62,9 @@ static int xhci_aeolia_probe_one(struct pci_dev *dev, int index)
 	struct xhci_hcd *xhci;
 	int irq = (axhci->nr_irqs > 1) ? (dev->irq + index) : dev->irq;
 
-	// ok...adding this printk appears to have introduced a delay that fixed
-	// bringup of the middle host controller, so w/e for now...
-
-	printk("xhci_aeolia_probe_one %d, controller is %x\n", index, dev->device);
+	dev_dbg(&dev->dev, "xhci_aeolia_probe_one %d\n", index);
+	/* hardware stabilisation, see git log */
+	usleep_range(200, 500);
 
 	hcd = usb_create_hcd(driver, &dev->dev, pci_name(dev));
 	pci_set_drvdata(dev, axhci); /* usb_create_hcd clobbers this */
