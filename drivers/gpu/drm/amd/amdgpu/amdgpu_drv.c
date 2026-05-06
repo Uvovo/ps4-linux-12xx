@@ -40,6 +40,9 @@
 #include <linux/pm_runtime.h>
 #include <linux/suspend.h>
 #include <linux/vga_switcheroo.h>
+#ifdef CONFIG_X86_PS4
+#include <asm/ps4.h>
+#endif
 
 #include "amdgpu.h"
 #include "amdgpu_amdkfd.h"
@@ -2001,6 +2004,11 @@ static const struct pci_device_id pciidlist[] = {
 	{0x1002, 0x985D, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_MULLINS|AMD_IS_MOBILITY|AMD_IS_APU},
 	{0x1002, 0x985E, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_MULLINS|AMD_IS_MOBILITY|AMD_IS_APU},
 	{0x1002, 0x985F, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_MULLINS|AMD_IS_MOBILITY|AMD_IS_APU},
+	/* Liverpool / Gladius */
+	{0x1002, 0x9920, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_LIVERPOOL|AMD_IS_APU},
+	{0x1002, 0x9922, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_LIVERPOOL|AMD_IS_APU},
+	{0x1002, 0x9923, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_LIVERPOOL|AMD_IS_APU},
+	{0x1002, 0x9924, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_GLADIUS|AMD_IS_APU},
 	/* topaz */
 	{0x1002, 0x6900, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_TOPAZ},
 	{0x1002, 0x6901, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_TOPAZ},
@@ -2430,6 +2438,15 @@ static int amdgpu_pci_probe(struct pci_dev *pdev,
 
 	if (!amdgpu_support_enabled(&pdev->dev, flags & AMD_ASIC_MASK))
 		return -ENODEV;
+
+#ifdef CONFIG_X86_PS4
+	/*
+	 * PS4 display bring-up depends on southbridge ICC/bridge init.
+	 * On non-PS4 systems apcie_status() returns -ENODEV.
+	 */
+	if (apcie_status() == 0)
+		return -EPROBE_DEFER;
+#endif
 
 	adev = devm_drm_dev_alloc(&pdev->dev, &amdgpu_kms_driver, typeof(*adev), ddev);
 	if (IS_ERR(adev))

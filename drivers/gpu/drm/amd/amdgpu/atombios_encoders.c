@@ -441,9 +441,25 @@ int amdgpu_atombios_encoder_get_encoder_mode(struct drm_encoder *encoder)
 	struct drm_connector *connector;
 	struct amdgpu_connector *amdgpu_connector;
 	struct amdgpu_connector_atom_dig *dig_connector;
+	struct drm_device *dev = encoder->dev;
+	struct amdgpu_device *adev;
+
+	if (WARN_ON(!dev))
+		return ATOM_ENCODER_MODE_DVO;
+
+	adev = dev->dev_private;
+	if (!adev && dev->dev)
+		adev = pci_get_drvdata(to_pci_dev(dev->dev));
+
+	if (!adev) {
+		WARN_ON(1);
+		return ATOM_ENCODER_MODE_DVO;
+	}
 
 	/* dp bridges are always DP */
-	if (amdgpu_encoder_get_dp_bridge_encoder_id(encoder) != ENCODER_OBJECT_ID_NONE)
+	if (amdgpu_encoder_get_dp_bridge_encoder_id(encoder) != ENCODER_OBJECT_ID_NONE ||
+	    adev->asic_type == CHIP_LIVERPOOL ||
+	    adev->asic_type == CHIP_GLADIUS)
 		return ATOM_ENCODER_MODE_DP;
 
 	/* DVO is always DVO */
@@ -2123,4 +2139,3 @@ amdgpu_atombios_encoder_get_dig_info(struct amdgpu_encoder *amdgpu_encoder)
 
 	return dig;
 }
-
