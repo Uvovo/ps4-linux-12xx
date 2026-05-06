@@ -8613,7 +8613,6 @@ restart_ih:
 			break;
 		case 176: /* GFX RB CP_INT */
 		case 177: /* GFX IB CP_INT */
-			DRM_ERROR("radeon_fence_process 176 177\n"); // eeply
 			radeon_fence_process(rdev, RADEON_RING_TYPE_GFX_INDEX);
 			break;
 		case 181: /* CP EOP event */
