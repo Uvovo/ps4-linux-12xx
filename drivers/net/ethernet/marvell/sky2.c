@@ -141,7 +141,7 @@ static const struct pci_device_id sky2_id_table[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_MARVELL, 0x4382) }, /* 88E8079 */
 	{ PCI_DEVICE(PCI_VENDOR_ID_SONY, PCI_DEVICE_ID_SONY_AEOLIA_GBE) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_SONY, PCI_DEVICE_ID_SONY_BELIZE_GBE) },
-	//{ PCI_DEVICE(PCI_VENDOR_ID_SONY, PCI_DEVICE_ID_SONY_BAIKAL_GBE) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_SONY, PCI_DEVICE_ID_SONY_BAIKAL_GBE) },
 	{ 0 }
 };
 
@@ -3242,7 +3242,9 @@ static void sky2_reset(struct sky2_hw *hw)
 	u32 hwe_mask = Y2_HWE_ALL_MASK;
 #ifdef CONFIG_X86_PS4
 	if (pdev->vendor == PCI_VENDOR_ID_SONY &&
-	    pdev->device == PCI_DEVICE_ID_SONY_AEOLIA_GBE) {
+	    (pdev->device == PCI_DEVICE_ID_SONY_AEOLIA_GBE ||
+	     pdev->device == PCI_DEVICE_ID_SONY_BELIZE_GBE ||
+	     pdev->device == PCI_DEVICE_ID_SONY_BAIKAL_GBE)) {
 		u32 val1, val2;
 
 		sky2_write32(hw, 0x60, 0x32100);
@@ -3322,8 +3324,10 @@ static void sky2_reset(struct sky2_hw *hw)
 	}
 #ifdef CONFIG_X86_PS4
 	if (pdev->vendor == PCI_VENDOR_ID_SONY &&
-	    pdev->device == PCI_DEVICE_ID_SONY_AEOLIA_GBE) {
-		; /* Do not perform phy resets on aeolia, it will hang */
+	    (pdev->device == PCI_DEVICE_ID_SONY_AEOLIA_GBE ||
+	     pdev->device == PCI_DEVICE_ID_SONY_BELIZE_GBE ||
+	     pdev->device == PCI_DEVICE_ID_SONY_BAIKAL_GBE)) {
+		; /* Do not perform phy resets on PS4, it will hang */
 	} else
   #endif
 	if (hw->chip_id == CHIP_ID_YUKON_OPT ||
@@ -4642,6 +4646,7 @@ static void aeolia_get_mac_address(struct sky2_hw *hw, unsigned char *addr) {
 	}
 
 	memcpy_fromio(addr, bp, ETH_ALEN);
+	dev_info(&hw->pdev->dev, "sky2: PS4 MAC address %pM (from SPM)\n", addr);
 
 	iounmap(bp);
 release_bp:
@@ -4984,11 +4989,13 @@ static int sky2_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		dev_err(&pdev->dev, "cannot map device registers\n");
 		goto err_out_free_hw;
 	}
-  hw->phy_addr = PHY_ADDR_MARV;
+	hw->phy_addr = PHY_ADDR_MARV;
 #ifdef CONFIG_X86_PS4
 	if (pdev->vendor == PCI_VENDOR_ID_SONY &&
-	    pdev->device == PCI_DEVICE_ID_SONY_AEOLIA_GBE) {
-		/* aeolia supports some sort of "l2 switch" */
+	    (pdev->device == PCI_DEVICE_ID_SONY_AEOLIA_GBE ||
+	     pdev->device == PCI_DEVICE_ID_SONY_BELIZE_GBE ||
+	     pdev->device == PCI_DEVICE_ID_SONY_BAIKAL_GBE)) {
+		/* PS4 supports some sort of "l2 switch" */
 		/* it has normal phy at addr 1 with a possibly-active switch at addr 2 */
 		hw->phy_addr = 1;
 	}
