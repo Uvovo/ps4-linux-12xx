@@ -256,11 +256,15 @@ static int _apcie_icc_cmd(struct apcie_dev *sc, u8 major, u16 minor, const void 
 	return sc->icc.reply.length - ICC_HDR_SIZE;
 }
 
+#include <kunit/static_stub.h>
+
 /* From arch/x86/platform/ps4/ps4.c */
 extern bool bpcie_initialized;
 int apcie_icc_cmd(u8 major, u16 minor, const void *data, u16 length,
 		   void *reply, u16 reply_length)
 {
+	KUNIT_STATIC_STUB_REDIRECT(apcie_icc_cmd, major, minor, data, length, reply, reply_length);
+
 	if (bpcie_initialized)
 			return bpcie_icc_cmd(major, minor, data, length, reply, reply_length);
 	
