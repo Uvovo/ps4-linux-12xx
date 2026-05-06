@@ -113,6 +113,7 @@ static __init unsigned long ps4_measure_tsc_freq(void)
 	// We don't need to wait very long, as we are looking for transitions.
 	// At this value, a TSC uncertainty of ~50 ticks corresponds to 1ppm of
 	// clock accuracy.
+	u64 deadline = rdtsc() + PS4_DEFAULT_TSC_FREQ / 5; /* 200ms hard cap */
 	for (;;) {
 		if (!emctimer_read(&now)) {
 			pr_warn("EMC timer did not stabilize.\n");
@@ -120,6 +121,10 @@ static __init unsigned long ps4_measure_tsc_freq(void)
 		}
 		if ((now - t2) >= 1024)
 			break;
+		if (rdtsc() > deadline) {
+			pr_warn("EMC timer 1024-tick wait timed out.\n");
+			goto fail;
+		}
 	}
 	tsc2 = rdtsc();
 
