@@ -30,6 +30,7 @@ struct aeolia_xhci {
 static int xhci_aeolia_setup(struct usb_hcd *hcd);
 
 static const struct xhci_driver_overrides xhci_aeolia_overrides __initconst = {
+	.extra_priv_size = sizeof(struct xhci_hcd), // REALLYNGA? THIS WAS NEEDED?
 	.reset = xhci_aeolia_setup,
 };
 
@@ -369,12 +370,7 @@ static int xhci_aeolia_probe(struct pci_dev *dev, const struct pci_device_id *id
 	}
 	pci_set_drvdata(dev, axhci);
 
-	if (xhci_aeolia_is_baikal(&dev->dev))
-		axhci->nr_irqs = retval = pci_alloc_irq_vectors(dev, NR_DEVICES,
-							NR_DEVICES,
-							PCI_IRQ_MSIX | PCI_IRQ_MSI);
-	else
-		axhci->nr_irqs = retval = apcie_assign_irqs(dev, NR_DEVICES);
+	axhci->nr_irqs = retval = apcie_assign_irqs(dev, NR_DEVICES);
 	if (retval < 0) {
 		goto free_axhci;
 	}
