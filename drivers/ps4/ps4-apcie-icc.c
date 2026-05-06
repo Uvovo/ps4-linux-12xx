@@ -425,7 +425,7 @@ static void icc_shutdown(void)
 	if (apcie_status() != 1)
 		return;
 	apcie_icc_cmd(4, 1, command, sizeof(command), NULL, 0);
-	mdelay(3000);
+	msleep(3000);
 	WARN_ON(1);
 }
 
@@ -437,7 +437,7 @@ void icc_reboot(void)
 	if (apcie_status() != 1)
 		return;
 	apcie_icc_cmd(4, 1, command, sizeof(command), NULL, 0);
-	mdelay(3000);
+	msleep(3000);
 	WARN_ON(1);
 }
 
