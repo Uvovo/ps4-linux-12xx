@@ -21,7 +21,7 @@ This fork originally aimed to make the internal WiFi+Bluetooth modules on specif
 
 Over time it grew into a broader PS4-focused kernel tree covering graphics hotplug and bridge handling, HDMI audio, GPU clocking, thermal and LED control, fan control, firmware quirks, internal WiFi support, runtime stability, and newer desktop/container-oriented configuration paths.
 
-The current stable integration branch in this repository is `7.0-Stable`. `7.0-Clean` is still present as a clean 7.0 baseline/staging branch, while the `rmux/*` branches are topic branches for focused display, firmware, ICC, UART, runtime, LED/fan, and stability work. Older `6.18.x-Strawberry` branches are retained as previous Strawberry development and fallback lines.
+The current stable integration branch in this repository is `7.0-Stable`. `7.0-Clean` is still present as a clean 7.0 baseline/staging branch, while the `rmux/*` branches are topic branches for focused display, networking, firmware, ICC, UART, runtime, LED/fan, and stability work. Older `6.18.x-Strawberry` branches are retained as previous Strawberry development and fallback lines.
 
 <br>
 
@@ -29,12 +29,28 @@ The current stable integration branch in this repository is `7.0-Stable`. `7.0-C
 ## Current Status (`7.0-Stable`)
 
 - `7.0-Stable` is the current stable PS4-focused Linux 7.0 integration branch in this repository.
-- Display and bridge work includes custom PS4 bridge and encoder patches, PS4 display fixes merged into `7.0-Stable`, sysfs-triggered bridge reprobes, default bridge modes clamped to 60 Hz, Belize bridge enable retries, bridge enable-state fixes, and DP retraining after Belize bridge enable.
-- HDMI audio on Liverpool-based systems is fixed by enabling IEC958 on the relevant R6xx converters during init.
-- PS4 platform support includes Aeolia/Belize front-panel LED support, fan threshold and RPM `hwmon` support, corrected fan threshold milli-Celsius handling, cached fan reads, duplicate fan threshold write suppression, duplicate LED update suppression, blocking LED callbacks, fixed power-button input teardown, PS4 DMI spoof fallback support, `/dev/ps4-mesa-lock` for Mesa/kernel compatibility checks, and required firmware handling.
-- Networking and wireless work includes the Aeolia `sky2` interrupt-storm fix, mwifiex power-save disabling, MediaTek WiFi power-save disabling, and mt76x8 warning/build cleanups for newer kernels.
-- Runtime, power, and cleanup work includes PS4 PCIe ASPM and clock-state tuning, a Liverpool/Gladius SCLK force driver, deeper GFX/SDMA low-power states disabled for steadier sustained performance, quieter ICC normal-path boot logs, reduced APCIE/ICC overhead, and hardened ICC, MSI, xHCI, and teardown paths.
-- Build and forward-port maintenance includes the Strawberry Builder with `Server` and `General` profiles, ThinLTO or FullLTO selection, private firmware workflow support, SD8797 custom firmware checks, automatic `config` to `.config` migration, and General-profile `DMI` / `fw_cfg` sysfs support for desktop userspace compatibility.
+- Hardware Bringup and Stability:
+  - Added measurement deadline to x86 PS4 calibration loop to prevent hangs on certain hardware.
+  - Hardened ICC IRQ and ioctl handling to improve system stability.
+  - Tightened APCIE MSI bookkeeping and hardened MSI paths for Liverpool/Gladius GPUs.
+  - Corrected fan threshold milli-Celsius handling and corrected fan threshold logic.
+  - Implemented firmware-based EDID loading for PS4 bridges.
+  - Fixed Belize bridge enable retry loops and DP retraining logic.
+  - Bounded EMC timer stabilization reads to prevent long boot delays.
+- Graphics and Audio:
+  - Added warnings for Liverpool SDMA ring test failures.
+  - Removed high-frequency debug logging from Radeon CIK interrupts.
+  - Fixed HDMI audio on Liverpool systems via IEC958 initialization.
+- Subsystem Fixes:
+  - xHCI Aeolia: Replaced printk-based timing hacks with proper `usleep` calls.
+  - xHCI Aeolia: Fixed AHCI host activation error paths.
+  - ICC: Replaced `mdelay` with `msleep` in shutdown and reboot paths to avoid busy-waiting.
+- Networking (Experimental):
+  - Advanced `sky2` fixes are being tested in `rmux/sky2/experimental-fixes` to resolve interrupt storms and memory leaks across all PS4 southbridge variations (Aeolia, Belize, Baikal).
+- Maintenance:
+  - Removed legacy BORE scheduler references.
+  - Updated build system to embed PS4 SD8797 firmware.
+  - Added new "strawberry" boot banner.
 
 <br>
 
@@ -245,7 +261,10 @@ Read the release notes before booting a kernel. They may contain model-specific 
 ---
 ## Contributing
 
-If something does not work on these kernels, a feature is missing, or your model still has unsupported WiFi/Bluetooth, please open a GitHub issue with as much detail as possible.
+If something does not work on these kernels, a feature is missing, or your model still has unsupported WiFi/Bluetooth, please open a GitHub issue or start a discussion with as much detail as possible.
+
+- Issues: https://github.com/rmuxnet/ps4-linux-12xx/issues
+- Discussions: https://github.com/rmuxnet/ps4-linux-12xx/discussions
 
 Useful information includes:
 
@@ -256,7 +275,12 @@ Useful information includes:
 - boot logs, `dmesg`, and relevant errors;
 - whether HDMI, WiFi, Bluetooth, fan control, LEDs, power button, and Ethernet work.
 
-Pull requests and code contributions are welcome.
+Pull requests and code contributions are welcome. When submitting a pull request, please ensure the following:
+
+- **Problem Description**: Clearly explain the issue or limitation being addressed.
+- **Technical Solution**: Describe how the change solves the problem. Mention specific registers, logic changes, or architectural decisions.
+- **Benefits and Rationale**: Explain the gain from the change, such as improved stability, performance, or hardware compatibility.
+- **Verification**: State how the change was tested and on which console models/southbridges.
 
 <br>
 
