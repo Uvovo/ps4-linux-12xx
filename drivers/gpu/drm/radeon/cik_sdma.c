@@ -710,9 +710,10 @@ int cik_sdma_ring_test(struct radeon_device *rdev,
 		DRM_ERROR("radeon: ring %d test failed (0x%08X)\n",
 			  ring->idx, tmp);
 
-		// TODO (ps4patches): rip errors i guess
 		if (rdev->family != CHIP_LIVERPOOL) {
 			r = -EINVAL;
+		} else {
+			DRM_WARN("Liverpool SDMA ring test failed (0x%08X), continuing\n", tmp);
 		}
 	}
 	return r;
