@@ -329,6 +329,7 @@ static int ahci_init_one(struct pci_dev *pdev)
 	return 0;
 
 	host_deactivate:
+		ata_host_detach(host);
 	release_host:
 	unmap_registers:
 		iounmap(hpriv->mmio);
