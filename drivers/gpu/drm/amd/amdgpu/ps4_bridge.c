@@ -821,14 +821,11 @@ static void ps4_bridge_enable(struct drm_bridge *bridge)
 				      PS4_BRIDGE_BELIZE_ENABLE_ATTEMPTS);
 
 			ret = ps4_bridge_enable_mn864729_video(mn_bridge, pdev);
-			if (ret) {
-				if (attempt < PS4_BRIDGE_BELIZE_ENABLE_ATTEMPTS)
-					msleep(PS4_BRIDGE_BELIZE_RETRY_DELAY_MS);
-				continue;
+			if (!ret) {
+				success = true;
+				ps4_bridge_retrain_dp(mn_bridge);
+				break;
 			}
-
-			success = true;
-			ps4_bridge_retrain_dp(mn_bridge);
 
 			if (attempt < PS4_BRIDGE_BELIZE_ENABLE_ATTEMPTS)
 				msleep(PS4_BRIDGE_BELIZE_RETRY_DELAY_MS);
