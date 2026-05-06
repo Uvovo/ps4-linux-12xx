@@ -1256,7 +1256,9 @@ static int gfx_v7_0_init_microcode(struct amdgpu_device *adev)
 	if (err)
 		goto out;
 
-	if (adev->asic_type == CHIP_KAVERI) {
+	if ((adev->asic_type == CHIP_KAVERI) ||
+	    (adev->asic_type == CHIP_LIVERPOOL) ||
+	    (adev->asic_type == CHIP_GLADIUS)) {
 		err = amdgpu_ucode_request(adev, &adev->gfx.mec2_fw,
 					   AMDGPU_UCODE_REQUIRED,
 					   "amdgpu/%s_mec2.bin", chip_name);
