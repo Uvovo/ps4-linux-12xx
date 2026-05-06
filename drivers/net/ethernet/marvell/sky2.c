@@ -3054,8 +3054,12 @@ static int sky2_poll(struct napi_struct *napi, int work_limit)
 	napi_complete_done(napi, work_done);
 	sky2_read32(hw, B0_Y2_SP_LISR);
 #ifdef CONFIG_X86_PS4
-	/* Aeolia: LISR read has no unmas side-effeectt; rearm via ICR */
-	sky2_write32(hw, AEOLIA_SP_ICR,1);
+	/* PS4: LISR read has no unmask side-effect; rearm via ICR.
+	 * Preserve other config bits. */
+	if (hw->pdev->vendor == PCI_VENDOR_ID_SONY) {
+		u32 val = sky2_read32(hw, AEOLIA_SP_ICR);
+		sky2_write32(hw, AEOLIA_SP_ICR, (val & ~2) | 1);
+	}
 #endif
 done:
 
@@ -3067,13 +3071,24 @@ static irqreturn_t sky2_intr(int irq, void *dev_id)
 	struct sky2_hw *hw = dev_id;
 	u32 status;
 #ifdef CONFIG_X86_PS4
-	/* Aeolia: mask on entry before any register read to close the
-	 * re-assertion race window. ISRC2 read has no mask side-effect. */
-	sky2_write32(hw, AEOLIA_SP_ICR, 2);
+	/* PS4: mask on entry before any register read to close the
+	 * re-assertion race window. ISRC2 read has no mask side-effect.
+	 * Preserve other config bits. */
+	if (hw->pdev->vendor == PCI_VENDOR_ID_SONY) {
+		u32 val = sky2_read32(hw, AEOLIA_SP_ICR);
+		sky2_write32(hw, AEOLIA_SP_ICR, (val & ~1) | 2);
+	}
 #endif
 	/* Reading this masks interrupts as side effect (standard Yukon-2 only) */
 	status = sky2_read32(hw, B0_Y2_SP_ISRC2);
 	if (status == 0 || status == ~0) {
+#ifdef CONFIG_X86_PS4
+		/* Unmask Sony ICR if we masked it and it's not our IRQ */
+		if (hw->pdev->vendor == PCI_VENDOR_ID_SONY) {
+			u32 val = sky2_read32(hw, AEOLIA_SP_ICR);
+			sky2_write32(hw, AEOLIA_SP_ICR, (val & ~2) | 1);
+		}
+#endif
 		sky2_write32(hw, B0_Y2_SP_ICR, 2);
 		return IRQ_NONE;
 	}
@@ -3249,8 +3264,7 @@ static void sky2_reset(struct sky2_hw *hw)
 	u32 hwe_mask = Y2_HWE_ALL_MASK;
 
 	#ifdef CONFIG_X86_PS4
-	if (pdev->vendor == PCI_VENDOR_ID_SONY &&
-	    pdev->device == PCI_DEVICE_ID_SONY_AEOLIA_GBE) {
+	if (pdev->vendor == PCI_VENDOR_ID_SONY) {
 		u32 val1, val2;
 
 		sky2_write32(hw, 0x60, 0x32100);
@@ -3331,9 +3345,8 @@ static void sky2_reset(struct sky2_hw *hw)
 	}
 
 	#ifdef CONFIG_X86_PS4
-	if (pdev->vendor == PCI_VENDOR_ID_SONY &&
-	    pdev->device == PCI_DEVICE_ID_SONY_AEOLIA_GBE) {
-		; /* Do not perform phy resets on aeolia, it will hang */
+	if (pdev->vendor == PCI_VENDOR_ID_SONY) {
+		; /* Do not perform phy resets on PS4, it will hang */
 	} else
 	#endif
 
@@ -4658,6 +4671,8 @@ static void aeolia_get_mac_address(struct sky2_hw *hw, unsigned char *addr) {
 	iounmap(bp);
 release_bp:
 	release_mem_region(bp_base, APCIE_SPM_BP_SIZE);
+put_dev:
+	pci_dev_put(mem_dev);
 }
 #endif
 
@@ -4792,6 +4807,12 @@ static irqreturn_t sky2_test_intr(int irq, void *dev_id)
 		wake_up(&hw->msi_wait);
 		sky2_write8(hw, B0_CTST, CS_CL_SW_IRQ);
 	}
+#ifdef CONFIG_X86_PS4
+	if (hw->pdev->vendor == PCI_VENDOR_ID_SONY) {
+		u32 val = sky2_read32(hw, AEOLIA_SP_ICR);
+		sky2_write32(hw, AEOLIA_SP_ICR, (val & ~1) | 2);
+	}
+#endif
 	sky2_write32(hw, B0_Y2_SP_ICR, 2);
 
 	return IRQ_HANDLED;
@@ -5003,10 +5024,9 @@ static int sky2_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	hw->phy_addr = PHY_ADDR_MARV;
 	#ifdef CONFIG_X86_PS4
-	if (pdev->vendor == PCI_VENDOR_ID_SONY &&
-	    pdev->device == PCI_DEVICE_ID_SONY_AEOLIA_GBE) {
-		/* aeolia supports some sort of "l2 switch" */
-		/* it has normal phy at addr 1 with a possibly-active switch at addr 2 */
+	if (hw->pdev->vendor == PCI_VENDOR_ID_SONY) {
+		/* Sony PS4 GBE supports an internal L2 switch.
+		 * The primary PHY is typically at address 1. */
 		hw->phy_addr = 1;
 	}
 	#endif
@@ -5048,7 +5068,7 @@ static int sky2_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 			/* PS4 requires MSI, so if it fails, bail out. */
 			goto err_out_free_netdev;
 		}
-		hw->flags |= SKY2_HW_USE_AEOLIA_MSI;
+		hw->flags |= SKY2_HW_USE_PS4_MSI;
 	} else
 	#endif
 
@@ -5109,7 +5129,7 @@ err_out_unregister:
 	unregister_netdev(dev);
 err_out_free_netdev:
 	#ifdef CONFIG_X86_PS4
-	if (hw->flags & SKY2_HW_USE_AEOLIA_MSI)
+	if (hw->flags & SKY2_HW_USE_PS4_MSI)
 		apcie_free_irqs(pdev->irq, 1);
 	else
 	#endif
@@ -5163,7 +5183,7 @@ static void sky2_remove(struct pci_dev *pdev)
 	}
 
 	#ifdef CONFIG_X86_PS4
-	if (hw->flags & SKY2_HW_USE_AEOLIA_MSI)
+	if (hw->flags & SKY2_HW_USE_PS4_MSI)
 		apcie_free_irqs(pdev->irq, 1);
 	else
 	#endif

@@ -2294,7 +2294,8 @@ struct sky2_hw {
 #define SKY2_HW_RSS_CHKSUM	0x00000400	/* RSS requires chksum */
 #define SKY2_HW_IRQ_SETUP	0x00000800
 
-#define SKY2_HW_USE_AEOLIA_MSI	0x00001000
+#define SKY2_HW_USE_PS4_MSI 0x00001000
+
 
 	u8	     	     chip_id;
 	u8		     chip_rev;
