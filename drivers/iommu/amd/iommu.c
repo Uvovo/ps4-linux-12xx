@@ -3115,6 +3115,19 @@ static bool amd_iommu_is_attach_deferred(struct device *dev)
 	return dev_data->defer_attach;
 }
 
+static bool amd_iommu_ps4_baikal_force_identity(struct device *dev)
+{
+	struct pci_dev *pdev;
+
+	if (!dev_is_pci(dev))
+		return false;
+
+	pdev = to_pci_dev(dev);
+	return pdev->vendor == PCI_VENDOR_ID_SONY &&
+	       pdev->device >= PCI_DEVICE_ID_SONY_BAIKAL_ACPI &&
+	       pdev->device <= PCI_DEVICE_ID_SONY_BAIKAL_XHCI;
+}
+
 static int amd_iommu_def_domain_type(struct device *dev)
 {
 	struct iommu_dev_data *dev_data;
@@ -3126,6 +3139,17 @@ static int amd_iommu_def_domain_type(struct device *dev)
 	/* Always use DMA domain for untrusted device */
 	if (dev_is_pci(dev) && to_pci_dev(dev)->untrusted)
 		return IOMMU_DOMAIN_DMA;
+
+	/*
+	 * Baikal southbridge functions require low 31-bit coherent DMA very
+	 * early during probe. Keep the whole 00:14.x group in the identity
+	 * domain so those allocations use direct low-memory DMA instead of the
+	 * translated DMA domain that fails on this hardware.
+	 */
+	if (amd_iommu_ps4_baikal_force_identity(dev) &&
+	    !cc_platform_has(CC_ATTR_MEM_ENCRYPT) &&
+	    !amd_iommu_snp_en)
+		return IOMMU_DOMAIN_IDENTITY;
 
 	/*
 	 * Do not identity map IOMMUv2 capable devices when:

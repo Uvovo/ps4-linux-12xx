@@ -28,6 +28,9 @@
 #include <asm/x86_init.h>
 #include <asm/io_apic.h>
 #include <asm/irq_remapping.h>
+#ifdef CONFIG_X86_PS4
+#include <asm/setup.h>
+#endif
 #include <asm/set_memory.h>
 #include <asm/sev.h>
 
@@ -3269,8 +3272,12 @@ static int __init early_amd_iommu_init(void)
 	if (!is_kdump_kernel() || amd_iommu_disabled)
 		disable_iommus();
 
-	if (amd_iommu_irq_remap)
-		amd_iommu_irq_remap = check_ioapic_information();
+	if (amd_iommu_irq_remap) {
+#ifdef CONFIG_X86_PS4
+		if (boot_params.hdr.hardware_subarch != X86_SUBARCH_PS4)
+#endif
+			amd_iommu_irq_remap = check_ioapic_information();
+	}
 
 	if (amd_iommu_irq_remap) {
 		struct amd_iommu_pci_seg *pci_seg;
