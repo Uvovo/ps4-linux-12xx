@@ -148,9 +148,7 @@ struct ps4_bridge {
 
 /* this should really be taken care of by the connector, but that is currently
  * contained/owned by radeon_connector so just use a global for now */
-static struct ps4_bridge g_bridge = {
-	.mutex = __MUTEX_INITIALIZER(g_bridge.mutex)
-};
+static struct ps4_bridge *g_bridge = NULL;
 
 static void cq_init(struct i2c_cmdqueue *q, u8 code)
 {
@@ -688,7 +686,9 @@ int ps4_bridge_get_modes(struct drm_connector *connector)
 enum drm_connector_status ps4_bridge_detect(struct drm_connector *connector,
 					    bool force)
 {
-	struct ps4_bridge *mn_bridge = &g_bridge;
+	struct ps4_bridge *mn_bridge = g_bridge;
+	if (!mn_bridge)
+		return connector_status_disconnected;
 	u8 reg;
 
 	struct amdgpu_connector *amdgpu_connector = to_amdgpu_connector(connector);
@@ -715,6 +715,7 @@ enum drm_connector_status ps4_bridge_detect(struct drm_connector *connector,
 	else
 		return connector_status_disconnected;
 }
+EXPORT_SYMBOL_GPL(ps4_bridge_detect);
 
 enum drm_mode_status ps4_bridge_mode_valid(struct drm_connector *connector,
 					   const struct drm_display_mode *mode)
@@ -728,6 +729,7 @@ enum drm_mode_status ps4_bridge_mode_valid(struct drm_connector *connector,
 
 	return MODE_OK;
 }
+EXPORT_SYMBOL_GPL(ps4_bridge_mode_valid);
 
 static int ps4_bridge_attach(struct drm_bridge *bridge,
 			     struct drm_encoder *encoder,
@@ -748,24 +750,33 @@ static struct drm_bridge_funcs ps4_bridge_funcs = {
 int ps4_bridge_register(struct drm_connector *connector,
 			     struct drm_encoder *encoder)
 {
+	struct device *dev = connector->dev->dev;
+	struct ps4_bridge *mn_bridge;
 	int ret;
-	struct ps4_bridge *mn_bridge = &g_bridge;
+
+	mn_bridge = devm_drm_bridge_alloc(dev, struct ps4_bridge, bridge,
+					  &ps4_bridge_funcs);
+	if (IS_ERR(mn_bridge))
+		return PTR_ERR(mn_bridge);
 
 	mn_bridge->encoder = encoder;
 	mn_bridge->connector = connector;
-	mn_bridge->bridge.funcs = &ps4_bridge_funcs;
+	mutex_init(&mn_bridge->mutex);
+	mn_bridge->mode = 0;
 
-	if (!mn_bridge->bridge_added) {
-		drm_bridge_add(&mn_bridge->bridge);
-		mn_bridge->bridge_added = true;
-	}
+	drm_bridge_add(&mn_bridge->bridge);
 
-	ret = drm_bridge_attach(mn_bridge->encoder, &mn_bridge->bridge, NULL,
+	g_bridge = mn_bridge;   /* store the single instance */
+
+	ret = drm_bridge_attach(encoder, &mn_bridge->bridge, NULL,
 				DRM_BRIDGE_ATTACH_NO_CONNECTOR);
 	if (ret) {
 		DRM_ERROR("Failed to initialize bridge with drm\n");
+		drm_bridge_remove(&mn_bridge->bridge);
+		g_bridge = NULL;
 		return ret;
 	}
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(ps4_bridge_register);
