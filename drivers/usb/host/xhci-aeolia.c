@@ -60,7 +60,7 @@ static int xhci_aeolia_probe_one(struct pci_dev *dev, int index)
 	struct hc_driver *driver = &xhci_aeolia_hc_driver;
 	struct usb_hcd *hcd;
 	struct xhci_hcd *xhci;
-	int irq = (axhci->nr_irqs > 1) ? (dev->irq + index) : dev->irq;
+	int irq = (dev->msi_enabled && axhci->nr_irqs > 1) ? (dev->irq + index) : dev->irq;
 
 	dev_dbg(&dev->dev, "xhci_aeolia_probe_one %d\n", index);
 	/* hardware stabilisation, see git log */
