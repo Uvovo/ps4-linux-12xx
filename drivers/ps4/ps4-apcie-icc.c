@@ -630,13 +630,13 @@ int apcie_icc_init(struct apcie_dev *sc)
 	}
 
 	ret = register_chrdev(0, "icc", &icc_fops);
-	if (ret) {
+	if (ret < 0) {
 		sc_warn("icc: register_chrdev failed: %d\n", ret);
 		kfree(ioctl_reply_buf);
 		kfree(ioctl_send_buf);
 		ioctl_reply_buf = NULL;
 		ioctl_send_buf = NULL;
-		goto done;
+		goto unassign_global;
 	}
 	icc_major = ret;
 	icc_chrdev_registered = true;
