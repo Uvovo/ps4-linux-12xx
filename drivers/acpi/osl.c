@@ -571,6 +571,17 @@ acpi_os_install_interrupt_handler(u32 gsi, acpi_osd_handler handler,
 	if (acpi_irq_handler)
 		return AE_ALREADY_ACQUIRED;
 
+	/* On PS4, the SCI is broken and missing IOAPIC routing.
+	 * Fake success to prevent ACPI from falling back to CPU-burning polling mode.
+	 */
+	if (gsi == 9 && !boot_cpu_has(X86_FEATURE_HYPERVISOR) && boot_cpu_data.x86_vendor == X86_VENDOR_AMD && boot_cpu_data.x86 == 0x16) {
+		pr_info("ACPI: Bypassing SCI allocation for PS4\n");
+		acpi_irq_handler = handler;
+		acpi_irq_context = context;
+		acpi_sci_irq = INVALID_ACPI_IRQ;
+		return AE_OK;
+	}
+
 	if (acpi_gsi_to_irq(gsi, &irq) < 0) {
 		pr_err("SCI (ACPI GSI %d) not registered\n", gsi);
 		return AE_OK;
