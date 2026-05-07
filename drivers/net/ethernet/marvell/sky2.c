@@ -1732,6 +1732,17 @@ static int sky2_setup_irq(struct sky2_hw *hw, const char *name)
 		napi_enable(&hw->napi);
 		sky2_write32(hw, B0_IMSK, Y2_IS_BASE);
 		sky2_read32(hw, B0_IMSK);
+#ifdef CONFIG_X86_PS4
+		/* Aeolia (CXD90025G): the Yukon-2 LISR/ISRC2 read side-effects
+		 * that unmask the south-bridge IRQ are absent on this hardware,
+		 * so the AEOLIA_SP_ICR may still be left masked from a prior
+		 * sky2_intr() entry. Explicitly arm it here so the very first
+		 * IRQ after bring-up is delivered.
+		 */
+		if (pdev->vendor == PCI_VENDOR_ID_SONY &&
+		    pdev->device == PCI_DEVICE_ID_SONY_AEOLIA_GBE)
+			sky2_write32(hw, AEOLIA_SP_ICR, 1);
+#endif
 	}
 
 	return err;
@@ -2438,6 +2449,18 @@ static int sky2_change_mtu(struct net_device *dev, int new_mtu)
 	sky2_write32(hw, B0_IMSK, imask);
 
 	sky2_read32(hw, B0_Y2_SP_LISR);
+#ifdef CONFIG_X86_PS4
+	/* Aeolia: LISR read above does not unmask the south-bridge IRQ.
+	 * If sky2_intr() ran between IMSK=0 above and napi_disable(), it
+	 * left AEOLIA_SP_ICR=2 (masked) and napi_disable() prevented the
+	 * NAPI poll that would normally re-arm it. Without this explicit
+	 * unmask the NIC IRQ would silently stay masked for up to a
+	 * second until the watchdog reschedules NAPI.
+	 */
+	if (hw->pdev->vendor == PCI_VENDOR_ID_SONY &&
+	    hw->pdev->device == PCI_DEVICE_ID_SONY_AEOLIA_GBE)
+		sky2_write32(hw, AEOLIA_SP_ICR, 1);
+#endif
 	napi_enable(&hw->napi);
 
 	if (err)
@@ -3553,6 +3576,18 @@ static void sky2_all_up(struct sky2_hw *hw)
 		sky2_write32(hw, B0_IMSK, imask);
 		sky2_read32(hw, B0_IMSK);
 		sky2_read32(hw, B0_Y2_SP_LISR);
+#ifdef CONFIG_X86_PS4
+		/* Aeolia: LISR read does not unmask the south-bridge IRQ on
+		 * this hardware. sky2_all_up() runs from sky2_resume() and
+		 * sky2_restart() (the rx-hang recovery worker), both of which
+		 * follow a sky2_reset() that leaves AEOLIA_SP_ICR in an
+		 * undefined state. Explicitly arm it so post-reset the very
+		 * first IRQ is delivered to the host.
+		 */
+		if (hw->pdev->vendor == PCI_VENDOR_ID_SONY &&
+		    hw->pdev->device == PCI_DEVICE_ID_SONY_AEOLIA_GBE)
+			sky2_write32(hw, AEOLIA_SP_ICR, 1);
+#endif
 		napi_enable(&hw->napi);
 	}
 }
