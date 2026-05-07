@@ -424,6 +424,12 @@ static void ps4_bridge_retrain_dp(struct ps4_bridge *mn_bridge)
 	if (ret)
 		return;
 
+	static int link_train_attempts = 0;
+	if (link_train_attempts > 5) {
+		DRM_ERROR("ps4_bridge: DP link training gave up after 5 attempts\n");
+		return;
+	}
+	link_train_attempts++;
 	DRM_DEBUG_KMS("ps4_bridge: retraining DP link after bridge enable\n");
 	amdgpu_atombios_dp_link_train(encoder, connector);
 }
