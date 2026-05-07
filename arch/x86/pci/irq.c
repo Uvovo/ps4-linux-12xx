@@ -1720,6 +1720,11 @@ static int pirq_enable_irq(struct pci_dev *dev)
 {
 	u8 pin = 0;
 
+	if (!boot_cpu_has(X86_FEATURE_HYPERVISOR) && boot_cpu_data.x86_vendor == X86_VENDOR_AMD && boot_cpu_data.x86 == 0x16) {
+		/* On PS4, skip INTx fallback entirely to prevent IRQ storms */
+		return 0;
+	}
+
 	pci_read_config_byte(dev, PCI_INTERRUPT_PIN, &pin);
 	if (pin && !pcibios_lookup_irq(dev, 1)) {
 		char *msg = "";
