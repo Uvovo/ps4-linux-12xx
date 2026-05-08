@@ -366,8 +366,7 @@ static int apcie_is_compatible_device(struct pci_dev *dev)
 		return 0;
 	}
 	return (dev->device == PCI_DEVICE_ID_SONY_AEOLIA_PCIE ||
-		dev->device == PCI_DEVICE_ID_SONY_BELIZE_PCIE ||
-		dev->device == PCI_DEVICE_ID_SONY_BAIKAL_PCIE);
+		dev->device == PCI_DEVICE_ID_SONY_BELIZE_PCIE);
 }
 
 int apcie_assign_irqs(struct pci_dev *dev, int nvec)
@@ -610,17 +609,16 @@ static int apcie_probe(struct pci_dev *dev, const struct pci_device_id *id) {
 
 	if ((ret = apcie_glue_init(sc)) < 0)
 		goto free_bars;
-	// TODO (ps4patches): figure out why this dies a horrible and painful death.
-	//if ((ret = apcie_uart_init(sc)) < 0)
-	//	goto remove_glue;
-	if ((ret = apcie_icc_init(sc)) < 0)
+	if ((ret = apcie_uart_init(sc)) < 0)
 		goto remove_glue;
+	if ((ret = apcie_icc_init(sc)) < 0)
+		goto remove_uart;
 
 	WRITE_ONCE(apcie_initialized, true);
 	return 0;
 
-/* remove_uart:
-	apcie_uart_remove(sc); -- Should work, but dead label*/
+remove_uart:
+	apcie_uart_remove(sc);
 remove_glue:
 	apcie_glue_remove(sc);
 free_bars:
@@ -680,7 +678,6 @@ static int apcie_resume(struct pci_dev *dev) {
 static const struct pci_device_id apcie_pci_tbl[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_SONY, PCI_DEVICE_ID_SONY_AEOLIA_PCIE), },
 	{ PCI_DEVICE(PCI_VENDOR_ID_SONY, PCI_DEVICE_ID_SONY_BELIZE_PCIE), },
-	{ PCI_DEVICE(PCI_VENDOR_ID_SONY, PCI_DEVICE_ID_SONY_BAIKAL_PCIE), },
 	{ }
 };
 MODULE_DEVICE_TABLE(pci, apcie_pci_tbl);

@@ -612,6 +612,13 @@ config X86_PS4
 	depends on PCI
 	help
 	  Select to include support for the Sony PlayStation 4 game console.
+
+config X86_PS4_BAIKAL
+	bool "Sony PlayStation 4 Baikal southbridge support"
+	depends on X86_PS4
+	help
+	  Enable support for the Baikal southbridge used by PlayStation 4
+	  Slim and Pro systems.
  
 config X86_VSMP
 	bool "ScaleMP vSMP"

@@ -7,6 +7,9 @@ obj-y += ps4-apcie.o \
     ps4-apcie-icc.o \
     ps4-apcie-pwrbutton.o \
     icc/i2c.o
+obj-$(CONFIG_X86_PS4_BAIKAL) += ps4-bpcie.o \
+    ps4-bpcie-uart.o \
+    ps4-bpcie-icc.o
 obj-y += ps4-led.o
 obj-y += ps4-fan.o
 obj-y += ps4-mesa-lock.o

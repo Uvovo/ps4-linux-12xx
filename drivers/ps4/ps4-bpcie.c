@@ -1,0 +1,665 @@
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/pci.h>
+#include <linux/init.h>
+#include <linux/irq.h>
+#include <linux/irqchip.h>
+#include <linux/irqdomain.h>
+#include <linux/iopoll.h>
+#include <linux/msi.h>
+#include <asm/irqdomain.h>
+#include <asm/irq_remapping.h>
+
+#include <asm/msi.h>
+
+#include <asm/ps4.h>
+
+#include "baikal.h"
+
+/* #define QEMU_HACK_NO_IOMMU */
+
+#define APCIE_REG_CHIPID_0		0x1104
+#define APCIE_REG_CHIPID_1		0x1108
+#define APCIE_REG_CHIPREV		0x110c
+
+/* Number of implemented MSI registers per function */
+static const int subfuncs_per_func[BAIKAL_NUM_FUNCS] = {
+	//4, 4, 4, 4, 31, 2, 2, 4
+	2, 1, 1, 1, 31, 2, 3, 3
+};
+
+static void bpcie_msi_domain_set_desc(msi_alloc_info_t *arg, struct msi_desc *desc);
+
+/*static inline */u32 glue_read32(struct bpcie_dev *sc, u32 offset) {
+	return ioread32(sc->bar2 + offset);
+}
+
+/*static inline */void glue_write32(struct bpcie_dev *sc, u32 offset, u32 value) {
+	iowrite32(value, sc->bar2 + offset);
+}
+
+static void bpcie_msi_write_msg(struct irq_data *data, struct msi_msg *msg)
+{
+	struct bpcie_dev *sc = data->chip_data;
+	struct msi_desc *desc;
+
+	//Linux likes to unconfigure MSIs like this, but since we share the
+	//address between subfunctions, we can't do that. The IRQ should be
+	//masked via apcie_msi_mask anyway, so just do nothing.
+	if (!msg->address_lo) {
+		return;
+	}
+
+	dev_dbg(&sc->pdev->dev, "bpcie_msi_write_msg(%08x, %08x) mask=0x%x irq=%d hwirq=0x%lx %p\n",
+	       msg->address_lo, msg->data, data->mask, data->irq, data->hwirq, sc);
+
+	desc = irq_data_get_msi_desc(data);
+	if (desc && desc->irq == data->irq)
+		__pci_write_msi_msg(desc, msg);
+}
+
+static void bpcie_msi_unmask(struct irq_data *data)
+{
+	pci_msi_unmask_irq(data);
+}
+
+static void bpcie_msi_mask(struct irq_data *data)
+{
+	pci_msi_mask_irq(data);
+}
+
+static struct irq_chip bpcie_msi_controller = {
+	.name = "Baikal-MSI",
+	.irq_unmask = bpcie_msi_unmask,
+	.irq_mask = bpcie_msi_mask,
+	.irq_ack = irq_chip_ack_parent,
+	.irq_set_affinity = msi_domain_set_affinity,
+	.irq_retrigger = irq_chip_retrigger_hierarchy,
+	.irq_compose_msi_msg = irq_msi_compose_msg,
+	.irq_write_msi_msg = bpcie_msi_write_msg,
+	.flags = IRQCHIP_SKIP_SET_WAKE,
+};
+
+static irq_hw_number_t bpcie_msi_get_hwirq(struct msi_domain_info *info,
+					   msi_alloc_info_t *arg)
+{
+	return arg->hwirq;
+}
+
+static void bpcie_handle_edge_irq(struct irq_desc *desc)
+{
+	//return handle_edge_irq(desc);
+	u32 func = (desc->irq_data.hwirq >> 5) & 7;
+	u32 initial_hwirq = desc->irq_data.hwirq & ~0x1fLL;
+	//sc_dbg("bpcie_handle_edge_irq(hwirq=0x%X, irq=0x%X)\n", vector, desc->irq_data.irq);
+	unsigned int vector_to_write;
+	unsigned int mask;
+	char shift;
+
+	if (func == 4)          // Baikal Glue, 5 bits for subfunctions
+	{
+		vector_to_write = 2;
+		mask = -1;
+		shift = 0;
+	}
+	else if (func == 7)     // Baikal USB 3.0 xHCI Host Controller
+	{
+		vector_to_write = 3;
+		mask = 7;
+		shift = 0x10;
+	}
+	else if (func == 5)        // Baikal DMA Controller
+	{
+		mask = 3;
+		vector_to_write = 3;
+		shift = 0;
+	} else {
+		handle_edge_irq(desc);
+		return;
+	}
+
+	raw_spin_lock(&desc->lock); //TODO: try it
+	struct bpcie_dev *sc = desc->irq_data.chip_data;
+	glue_write32(sc, BPCIE_ACK_WRITE, vector_to_write);
+	u32 vector_read = glue_read32(sc, BPCIE_ACK_READ);
+	raw_spin_unlock(&desc->lock);
+
+	unsigned int subfunc_mask = mask & ~(vector_read >> shift);
+	//sc_dbg("subfunc_mask=0x%X, vector_read=0x%X\n", subfunc_mask, vector_read);
+	unsigned int i;
+	for (i = 0; i < 32; i++) {
+		if (subfunc_mask & (1 << i)) { //if (test_bit(vector, used_vectors))
+			unsigned int virq = irq_find_mapping(desc->irq_data.domain,
+					initial_hwirq + i);
+			struct irq_desc *new_desc = irq_to_desc(virq);
+			if (new_desc) {
+				//dev_dbg(new_desc->irq_common_data.msi_desc->dev, "handle_edge_irq_int(new hwirq=0x%X, irq=0x%X)\n", new_desc->irq_data.hwirq, new_desc->irq_data.irq);
+				handle_edge_irq(new_desc);
+			}
+		}
+	}
+}
+
+static int bpcie_msi_init(struct irq_domain *domain,
+			 struct msi_domain_info *info, unsigned int virq,
+			 irq_hw_number_t hwirq, msi_alloc_info_t *arg)
+{
+	pr_devel("bpcie_msi_init(%p, %p, %d, 0x%lx, %p)\n", domain, info, virq, hwirq, arg);
+
+	irq_domain_set_info(domain, virq, hwirq, info->chip, info->chip_data,
+			bpcie_handle_edge_irq/*handle_edge_irq*/, NULL, "edge");
+	return 0;
+}
+
+static void bpcie_msi_free(struct irq_domain *domain,
+			  struct msi_domain_info *info, unsigned int virq)
+{
+	pr_devel("bpcie_msi_free(%d)\n", virq);
+}
+
+static int bpcie_msi_prepare(struct irq_domain *domain, struct device *dev,
+			     int nvec, msi_alloc_info_t *arg)
+{
+	arg->type = X86_IRQ_ALLOC_TYPE_PCI_MSI;
+	return 0;
+}
+
+static struct msi_domain_ops bpcie_msi_domain_ops = {
+	.get_hwirq	= bpcie_msi_get_hwirq,
+	.msi_init	= bpcie_msi_init,
+	.msi_free	= bpcie_msi_free,
+	.set_desc	= bpcie_msi_domain_set_desc,
+	.msi_prepare = bpcie_msi_prepare,
+};
+
+static struct msi_domain_info bpcie_msi_domain_info = {
+	.flags		= MSI_FLAG_USE_DEF_DOM_OPS | MSI_FLAG_USE_DEF_CHIP_OPS, //maybe also | MSI_FLAG_ACTIVATE_EARLY
+	.ops		= &bpcie_msi_domain_ops,
+	.chip		= &bpcie_msi_controller,
+	.bus_token	= DOMAIN_BUS_PCI_DEVICE_MSI,
+	.handler	= bpcie_handle_edge_irq/*handle_edge_irq*/,
+};
+
+static void bpcie_msi_domain_set_desc(msi_alloc_info_t *arg,
+				    struct msi_desc *desc)
+{
+	struct pci_dev *dev = msi_desc_to_pci_dev(desc);
+	arg->type = X86_IRQ_ALLOC_TYPE_PCI_MSI;
+	arg->desc = desc;
+	//Our hwirq number is (slot << 8) | (func << 5) plus subfunction.
+	// Subfunction is usually 0 and implicitly increments per hwirq,
+	//but can also be 0xff to indicate that this is a shared IRQ.
+	arg->hwirq = (PCI_SLOT(dev->devfn) << 8) | (PCI_FUNC(dev->devfn) << 5);
+
+	#ifndef QEMU_HACK_NO_IOMMU
+		if (!(bpcie_msi_domain_info.flags & MSI_FLAG_MULTI_PCI_MSI)) {
+			arg->hwirq |= 0x1F; // Shared IRQ for all subfunctions
+		}
+	#endif
+}
+
+static struct irq_domain *bpcie_create_irq_domain(struct bpcie_dev *sc,
+						  struct pci_dev *pdev)
+{
+	struct irq_domain *parent;
+	struct irq_domain *d;
+
+	dev_info(&pdev->dev, "bpcie_create_irq_domain\n");
+	if (x86_vector_domain == NULL) {
+		dev_err(&pdev->dev, "bpcie: x86_vector_domain is NULL\n");
+		return NULL;
+	}
+
+	bpcie_msi_domain_info.chip_data = (void *)sc;
+	bpcie_msi_domain_info.flags &= ~MSI_FLAG_MULTI_PCI_MSI;
+	bpcie_msi_controller.name = "Baikal-MSI";
+
+	parent = dev_get_msi_domain(&pdev->dev);
+	if (parent) {
+		sc_info("Parent found! Switching to IR-Baikal-MSI.\n");
+		bpcie_msi_domain_info.flags |= MSI_FLAG_MULTI_PCI_MSI;
+		bpcie_msi_controller.name = "IR-Baikal-MSI";
+	} else {
+		sc_info("no parent, assigning x86_vector_domain.\n");
+		parent = x86_vector_domain;
+	}
+
+	d = msi_create_irq_domain(NULL, &bpcie_msi_domain_info, parent);
+	if (d)
+		dev_set_msi_domain(&pdev->dev, d);
+	else
+		dev_err(&pdev->dev, "bpcie: failed to create irq domain\n");
+
+	return d;
+}
+
+int bpcie_is_compatible_device(struct pci_dev *dev)
+{
+	if (!dev || dev->vendor != PCI_VENDOR_ID_SONY) {
+		return 0;
+	}
+	return (dev->device == PCI_DEVICE_ID_SONY_BAIKAL_PCIE);
+}
+
+int bpcie_assign_irqs(struct pci_dev *dev, int nvec)
+{
+	int ret;
+	unsigned int sc_devfn;
+	struct pci_dev *sc_dev;
+	struct bpcie_dev *sc;
+
+	sc_devfn = (dev->devfn & ~7) | BAIKAL_FUNC_ID_PCIE;
+	sc_dev = pci_get_slot(dev->bus, sc_devfn);
+
+	if (!bpcie_is_compatible_device(sc_dev)) {
+		dev_err(&dev->dev, "bpcie: this is not a Baikal device\n");
+		ret = -ENODEV;
+		goto fail;
+	}
+	sc = pci_get_drvdata(sc_dev);
+	if (!sc) {
+		dev_err(&dev->dev, "bpcie: not ready yet, cannot assign IRQs\n");
+		ret = -ENODEV;
+		goto fail;
+	}
+
+	dev_dbg(&dev->dev, "bpcie_assign_irqs(%d)\n", nvec);
+
+#ifndef QEMU_HACK_NO_IOMMU
+	if (!(bpcie_msi_domain_info.flags & MSI_FLAG_MULTI_PCI_MSI)) {
+		nvec = 1;
+		//info.msi_hwirq |= 0xff; // Shared IRQ for all subfunctions
+	}
+#endif
+	if (dev->msi_enabled)
+		ret = nvec;
+	else
+		ret = pci_alloc_irq_vectors(dev, 1, nvec, PCI_IRQ_MSI);
+
+fail:
+	dev_dbg(&dev->dev, "bpcie_assign_irqs returning %d\n", ret);
+	if (sc_dev)
+		pci_dev_put(sc_dev);
+	return ret;
+}
+EXPORT_SYMBOL(bpcie_assign_irqs);
+
+void bpcie_free_irqs(unsigned int virq, unsigned int nr_irqs)
+{
+	struct msi_desc *desc = irq_get_msi_desc(virq);
+	struct pci_dev *pdev = desc ? msi_desc_to_pci_dev(desc) : NULL;
+
+	if (pdev) {
+		pci_free_irq_vectors(pdev);
+		return;
+	}
+
+	irq_domain_free_irqs(virq, nr_irqs);
+}
+EXPORT_SYMBOL(bpcie_free_irqs);
+
+static void bpcie_glue_remove(struct bpcie_dev *sc);
+
+static struct pci_dev * get_bpcie_device(struct bpcie_dev *sc, u32 bcpie_func) {
+	unsigned int devfn;
+	struct pci_dev *sc_dev;
+
+	sc_dev = sc->pdev;
+	devfn = (sc_dev->devfn & ~7) | bcpie_func;
+	return pci_get_slot(sc_dev->bus, devfn);
+}
+
+static void bpcie_create_irq_domains(struct bpcie_dev *sc) {
+	int func;
+	for (func = 0; func < BAIKAL_NUM_FUNCS; ++func) {
+		struct pci_dev * bpcie_pdev = get_bpcie_device(sc, func);
+		if (bpcie_pdev) {
+			struct irq_domain * domain = bpcie_create_irq_domain(sc, bpcie_pdev);
+			if (func == BAIKAL_FUNC_ID_PCIE) sc->irqdomain = domain;
+			pci_dev_put(bpcie_pdev);
+		} else
+			sc_err("cannot find bpcie func %d device", func);
+	}
+}
+
+static int bpcie_glue_init(struct bpcie_dev *sc)
+{
+	sc_info("bpcie glue probe\n");
+
+
+	if (!request_mem_region(pci_resource_start(sc->pdev, 2), pci_resource_len(sc->pdev, 2),
+				"bpcie.glue")) {
+		sc_err("Failed to request pcie region\n");
+		return -EBUSY;
+
+	}
+
+	if (!request_mem_region(pci_resource_start(sc->pdev, 4), pci_resource_len(sc->pdev, 4),
+				"bpcie.chipid")) {
+		sc_err("Failed to request chipid region\n");
+
+		release_mem_region(pci_resource_start(sc->pdev, 2), pci_resource_len(sc->pdev, 2));
+
+		return -EBUSY;
+	}
+
+	sc_info("Baikal chip revision: %08x:%08x:%08x\n",
+		ioread32(sc->bar4 + BPCIE_REG_CHIPID_0),
+		ioread32(sc->bar4 + BPCIE_REG_CHIPID_1),
+		ioread32(sc->bar4 + BPCIE_REG_CHIPREV));
+
+	//sc->irqdomain = bpcie_create_irq_domain(sc);
+	bpcie_create_irq_domains(sc);
+	if (!sc->irqdomain) {
+		sc_err("Failed to create IRQ domain");
+		bpcie_glue_remove(sc);
+		return -EIO;
+	}
+
+	//sc->nvec = bpcie_assign_irqs(sc->pdev, BPCIE_NUM_SUBFUNC);
+	sc->nvec = pci_alloc_irq_vectors(sc->pdev, BPCIE_SUBFUNC_ICC+1, BPCIE_NUM_SUBFUNCS, PCI_IRQ_MSI);
+	if (sc->nvec <= 0) {
+		sc_err("Failed to assign IRQs");
+		bpcie_glue_remove(sc);
+		return -EIO;
+	}
+	sc_dbg("dev->irq=%d\n", sc->pdev->irq);
+
+	return 0;
+}
+
+static void bpcie_glue_remove(struct bpcie_dev *sc) {
+	sc_info("bpcie glue remove\n");
+
+	if (sc->nvec > 0) {
+		bpcie_free_irqs(sc->pdev->irq, sc->nvec);
+		sc->nvec = 0;
+	}
+
+	if (sc->irqdomain) {
+		irq_domain_remove(sc->irqdomain);//TODO: remove other domains
+		sc->irqdomain = NULL;
+	}
+
+	release_mem_region(pci_resource_start(sc->pdev, 4), pci_resource_len(sc->pdev, 4));
+	release_mem_region(pci_resource_start(sc->pdev, 2), pci_resource_len(sc->pdev, 2));
+}
+
+#ifdef CONFIG_PM
+static int bpcie_glue_suspend(struct bpcie_dev *sc, pm_message_t state) {
+	return 0;
+}
+
+static int bpcie_glue_resume(struct bpcie_dev *sc) {
+	return 0;
+}
+#endif
+
+
+int bpcie_uart_init(struct bpcie_dev *sc);
+int bpcie_icc_init(struct bpcie_dev *sc);
+void bpcie_uart_remove(struct bpcie_dev *sc);
+void bpcie_icc_remove(struct bpcie_dev *sc);
+#ifdef CONFIG_PM
+void bpcie_uart_suspend(struct bpcie_dev *sc, pm_message_t state);
+void bpcie_icc_suspend(struct bpcie_dev *sc, pm_message_t state);
+void bpcie_uart_resume(struct bpcie_dev *sc);
+void bpcie_icc_resume(struct bpcie_dev *sc);
+#endif
+
+/* From arch/x86/platform/ps4/ps4.c */
+extern bool bpcie_initialized;
+
+static int bpcie_probe(struct pci_dev *dev, const struct pci_device_id *id) {
+	struct bpcie_dev *sc;
+	int ret;
+
+	dev_dbg(&dev->dev, "bpcie_probe()\n");
+
+	ret = pci_enable_device(dev);
+	if (ret) {
+		dev_err(&dev->dev,
+			"bpcie_probe(): pci_enable_device failed: %d\n", ret);
+		return ret;
+	}
+
+	sc = kzalloc(sizeof(*sc), GFP_KERNEL);
+	if (!sc) {
+		dev_err(&dev->dev, "bpcie_probe(): alloc sc failed\n");
+		ret = -ENOMEM;
+		goto disable_dev;
+	}
+	sc->pdev = dev;
+	pci_set_drvdata(dev, sc);
+
+	// eMMC ... unused?
+	sc->bar0 = pci_ioremap_bar(dev, 0);
+	// pervasive 0 - misc peripherals
+	sc->bar2 = pci_ioremap_bar(dev, 2);
+	// pervasive 1
+	sc->bar4 = pci_ioremap_bar(dev, 4);
+
+	if (!sc->bar0 || !sc->bar2 || !sc->bar4) {
+		sc_err("failed to map some BARs, bailing out\n");
+		ret = -EIO;
+		goto free_bars;
+	}
+
+	if ((ret = bpcie_glue_init(sc)) < 0)
+		goto free_bars;
+	if ((ret = bpcie_uart_init(sc)) < 0)
+		goto remove_glue;
+	if ((ret = bpcie_icc_init(sc)) < 0)
+		goto remove_uart;
+
+	WRITE_ONCE(bpcie_initialized, true);
+	return 0;
+
+remove_uart:
+	bpcie_uart_remove(sc);
+remove_glue:
+	bpcie_glue_remove(sc);
+free_bars:
+	if (sc->bar0)
+		iounmap(sc->bar0);
+	if (sc->bar2)
+		iounmap(sc->bar2);
+	if (sc->bar4)
+		iounmap(sc->bar4);
+	kfree(sc);
+disable_dev:
+	pci_disable_device(dev);
+	return ret;
+}
+
+static void bpcie_remove(struct pci_dev *dev) {
+	struct bpcie_dev *sc;
+	sc = pci_get_drvdata(dev);
+
+	WRITE_ONCE(bpcie_initialized, false);
+	bpcie_icc_remove(sc);
+	bpcie_uart_remove(sc);
+	bpcie_glue_remove(sc);
+
+	if (sc->bar0)
+		iounmap(sc->bar0);
+	if (sc->bar2)
+		iounmap(sc->bar2);
+	if (sc->bar4)
+		iounmap(sc->bar4);
+	kfree(sc);
+	pci_disable_device(dev);
+}
+
+#ifdef CONFIG_PM
+static int bpcie_suspend(struct pci_dev *dev, pm_message_t state) {
+	struct bpcie_dev *sc;
+	sc = pci_get_drvdata(dev);
+
+	bpcie_icc_suspend(sc, state);
+	bpcie_uart_suspend(sc, state);
+	bpcie_glue_suspend(sc, state);
+	return 0;
+}
+
+static int bpcie_resume(struct pci_dev *dev) {
+	struct bpcie_dev *sc;
+	sc = pci_get_drvdata(dev);
+
+	bpcie_icc_resume(sc);
+	bpcie_glue_resume(sc);
+	bpcie_uart_resume(sc);
+	return 0;
+}
+#endif
+
+static const struct pci_device_id bpcie_pci_tbl[] = {
+	{ PCI_DEVICE(PCI_VENDOR_ID_SONY, PCI_DEVICE_ID_SONY_BAIKAL_PCIE), },
+	{ }
+};
+MODULE_DEVICE_TABLE(pci, bpcie_pci_tbl);
+
+static struct pci_driver bpcie_driver = {
+	.name		= "baikal_pcie",
+	.id_table	= bpcie_pci_tbl,
+	.probe		= bpcie_probe,
+	.remove		= bpcie_remove,
+#ifdef CONFIG_PM
+	.suspend	= bpcie_suspend,
+	.resume		= bpcie_resume,
+#endif
+};
+module_pci_driver(bpcie_driver);
+
+static void bpcie_ahci_rmw(void __iomem *mmio, u32 offset, u32 mask, u32 set)
+{
+	u32 val = ioread32(mmio + offset);
+
+	iowrite32((val & mask) | set, mmio + offset);
+}
+
+/*
+ * Baikal uses two closely-related SATA PHY init paths:
+ * - xHCI/shared AHCI BAR uses the "usb+ahci" tuning window.
+ * - dedicated AHCI function uses the pure AHCI tuning window.
+ * The 5.4 driver selected different glue offsets and efuse fields depending
+ * on which function invoked the sequence. Keep that split here so the shared
+ * xHCI seed path and the dedicated AHCI path stop stepping on each other.
+ */
+int bpcie_baikal_sata_phy_init(struct pci_dev *pdev, void __iomem *ahci_mmio)
+{
+	struct pci_dev *glue_dev;
+	struct bpcie_dev *sc;
+	u32 efuse0, efuse1;
+	u32 tune0 = 40;
+	u32 tune1 = 16;
+	u32 tune2 = 16;
+	u32 pulse_offset;
+	u32 hold_offset;
+	u32 status;
+	bool shared_path;
+	int ret = 0;
+
+	if (!pdev || pdev->vendor != PCI_VENDOR_ID_SONY || !ahci_mmio)
+		return 0;
+
+	if (pdev->device != PCI_DEVICE_ID_SONY_BAIKAL_AHCI &&
+	    pdev->device != PCI_DEVICE_ID_SONY_BAIKAL_XHCI)
+		return 0;
+
+	glue_dev = pci_get_slot(pdev->bus,
+				(pdev->devfn & ~0x7) | BAIKAL_FUNC_ID_PCIE);
+	if (!glue_dev)
+		return -EPROBE_DEFER;
+
+	if (!bpcie_is_compatible_device(glue_dev)) {
+		ret = -ENODEV;
+		goto out_put;
+	}
+
+	sc = pci_get_drvdata(glue_dev);
+	if (!sc || !sc->bar2 || !sc->bar4) {
+		ret = -EPROBE_DEFER;
+		goto out_put;
+	}
+
+	dev_info(&pdev->dev, "Baikal SATA PHY init\n");
+
+	shared_path = pdev->device == PCI_DEVICE_ID_SONY_BAIKAL_XHCI;
+	if (shared_path) {
+		pulse_offset = 112;
+		hold_offset = 48;
+	} else {
+		pulse_offset = 108;
+		hold_offset = 44;
+	}
+
+	glue_write32(sc, BPCIE_USB_BASE + pulse_offset, 1);
+	glue_write32(sc, BPCIE_USB_BASE + hold_offset, 1);
+	glue_write32(sc, BPCIE_USB_BASE + pulse_offset, 0);
+
+	efuse0 = ioread32(sc->bar4 + 0xC000 + 72);
+	efuse1 = ioread32(sc->bar4 + 0xC000 + 108);
+
+	if (shared_path) {
+		if (efuse1 & BIT(26)) {
+			tune0 = (efuse0 >> 16) & 0x3f;
+			tune1 = (efuse0 >> 22) & 0x1f;
+			tune2 = efuse0 >> 27;
+		}
+	} else if (efuse1 & BIT(18)) {
+		tune0 = efuse0 & 0x3f;
+		tune1 = (efuse0 >> 6) & 0x1f;
+		tune2 = efuse0 >> 11;
+	}
+
+	dev_info(&pdev->dev, "Baikal SATA EFUSE VALUE: 0x%02x:0x%02x:0x%02x\n",
+		 tune0, tune1, tune2);
+	dev_info(&pdev->dev, "Baikal SATA PHY Trace length : %d\n", 4);
+
+	bpcie_ahci_rmw(ahci_mmio, 0x20A0, 0xFBFF03FF, (tune0 << 10) | 0x4000000);
+	iowrite32(ioread32(ahci_mmio + 0x2014) | 0x100000, ahci_mmio + 0x2014);
+	bpcie_ahci_rmw(ahci_mmio, 0x2054, 0xFFFFF07F, tune1 << 7);
+	iowrite32(ioread32(ahci_mmio + 0x201C) | 0x4, ahci_mmio + 0x201C);
+	bpcie_ahci_rmw(ahci_mmio, 0x2078, 0xFFFFFE0F, tune2 << 4);
+
+	bpcie_ahci_rmw(ahci_mmio, 0x204C, 0xFFC0FFFF, 0x1E0000);
+	bpcie_ahci_rmw(ahci_mmio, 0x204C, 0xC0FFFFFF, 0);
+	bpcie_ahci_rmw(ahci_mmio, 0x2054, 0xFFFF9FFF, 0x2000);
+	bpcie_ahci_rmw(ahci_mmio, 0x207C, 0xFFFFF03F, 0x840);
+	bpcie_ahci_rmw(ahci_mmio, 0x207C, 0xFFFC0FFF, 0x2000);
+	bpcie_ahci_rmw(ahci_mmio, 0x205C, 0xCFFFFFFF, 0x10000000);
+	bpcie_ahci_rmw(ahci_mmio, 0x2080, 0xFFFFF03F, 0x8C0);
+	bpcie_ahci_rmw(ahci_mmio, 0x2080, 0xFFFC0FFF, 0x7000);
+	bpcie_ahci_rmw(ahci_mmio, 0x205C, 0x3FFFFFFF, 0x40000000);
+	bpcie_ahci_rmw(ahci_mmio, 0x204C, 0xFFFFFFF0, 0x3);
+	bpcie_ahci_rmw(ahci_mmio, 0x206C, 0xFFFFF0FF, 0x100);
+	bpcie_ahci_rmw(ahci_mmio, 0x2084, 0xFFFFFF00, 0x43);
+
+	bpcie_ahci_rmw(ahci_mmio, 0x2040, 0xFFFFFFE0, 0x12);
+	bpcie_ahci_rmw(ahci_mmio, 0x2040, 0xFFFFC0FF, 0x3100);
+	bpcie_ahci_rmw(ahci_mmio, 0x2040, 0xFFE0FFFF, 0xE0000);
+	bpcie_ahci_rmw(ahci_mmio, 0x2040, 0xFFFFFF1F, 0x80);
+	bpcie_ahci_rmw(ahci_mmio, 0x201C, 0xFF0FFFFF, 0x200000);
+	bpcie_ahci_rmw(ahci_mmio, 0x20DC, 0xFFFFE0FF, 0x400);
+	iowrite32(ioread32(ahci_mmio + 0x2024) | 0x30, ahci_mmio + 0x2024);
+
+	/*
+	 * The 5.4 Baikal sequence releases the per-path USB/AHCI hold line
+	 * only after all PHY tuning writes land. Keeping it asserted strands
+	 * the shared xHCI/AHCI block before the first status poll.
+	 */
+	glue_write32(sc, BPCIE_USB_BASE + hold_offset, 0);
+	readl_poll_timeout_atomic(ahci_mmio + 0xDC, status, status & 0x1,
+				  10, 1000);
+
+	bpcie_ahci_rmw(ahci_mmio, 0x0, 0xE7FFFFFF, 0);
+	iowrite32(0x1, ahci_mmio + 0x0C);
+	bpcie_ahci_rmw(ahci_mmio, 0x0B8, 0xFFFDFFFF, 0);
+	bpcie_ahci_rmw(ahci_mmio, 0x118, 0xFFE3FFFF, 0x40000);
+
+out_put:
+	pci_dev_put(glue_dev);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(bpcie_baikal_sata_phy_init);
