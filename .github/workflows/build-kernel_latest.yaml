@@ -1,5 +1,5 @@
 name: "Strawberry-LTS"
-run-name: "${{ github.event_name == 'workflow_dispatch' && format('Strawberry-{0}-{1}', inputs.profile, inputs.lto) || format('Strawberry-tag-{0}', github.ref_name) }}"
+run-name: "${{ github.event_name == 'workflow_dispatch' && format('Strawberry-{0}-{1}-{2}', inputs.profile, inputs.lto, inputs.southbridge) || format('Strawberry-tag-{0}', github.ref_name) }}"
 
 on:
   workflow_dispatch:
@@ -20,6 +20,14 @@ on:
         options:
           - ThinLTO
           - FullLTO
+      southbridge:
+        description: "PS4 Southbridge Target"
+        required: true
+        default: "AeoliaBelize"
+        type: choice
+        options:
+          - AeoliaBelize
+          - Baikal
   push:
     tags:
       - "v*"
@@ -43,9 +51,11 @@ jobs:
         run: |
           PROFILE_INPUT="${{ github.event_name == 'workflow_dispatch' && inputs.profile || 'Server' }}"
           LTO_INPUT="${{ github.event_name == 'workflow_dispatch' && inputs.lto || 'ThinLTO' }}"
+          SOUTHBRIDGE_INPUT="${{ github.event_name == 'workflow_dispatch' && inputs.southbridge || 'AeoliaBelize' }}"
 
           PROFILE_INPUT="$(echo "$PROFILE_INPUT" | tr '[:upper:]' '[:lower:]')"
           LTO_INPUT="$(echo "$LTO_INPUT" | tr '[:upper:]' '[:lower:]')"
+          SOUTHBRIDGE_INPUT="$(echo "$SOUTHBRIDGE_INPUT" | tr '[:upper:]' '[:lower:]')"
 
           case "$PROFILE_INPUT" in
             general)
@@ -62,6 +72,15 @@ jobs:
               ;;
             *)
               TARGET_LTO="ThinLTO"
+              ;;
+          esac
+
+          case "$SOUTHBRIDGE_INPUT" in
+            baikal)
+              TARGET_SOUTHBRIDGE="Baikal"
+              ;;
+            *)
+              TARGET_SOUTHBRIDGE="AeoliaBelize"
               ;;
           esac
 
@@ -82,7 +101,8 @@ jobs:
 
           echo "target_profile=${TARGET_PROFILE}" >> "$GITHUB_OUTPUT"
           echo "target_lto=${TARGET_LTO}" >> "$GITHUB_OUTPUT"
-          echo "cache_suffix=${TARGET_PROFILE}-${TARGET_LTO}" >> "$GITHUB_OUTPUT"
+          echo "target_southbridge=${TARGET_SOUTHBRIDGE}" >> "$GITHUB_OUTPUT"
+          echo "cache_suffix=${TARGET_PROFILE}-${TARGET_LTO}-${TARGET_SOUTHBRIDGE}" >> "$GITHUB_OUTPUT"
           echo "swap_gb=${SWAP_GB}" >> "$GITHUB_OUTPUT"
 
       - name: Restore Cache of Github Workspace
@@ -168,18 +188,24 @@ jobs:
 
           TARGET_PROFILE="${{ steps.build-vars.outputs.target_profile }}"
           TARGET_LTO="${{ steps.build-vars.outputs.target_lto }}"
+          TARGET_SOUTHBRIDGE="${{ steps.build-vars.outputs.target_southbridge }}"
 
           echo "Executing build.sh with profile: \$TARGET_PROFILE"
           echo "Executing build.sh with LTO: \$TARGET_LTO"
+          echo "Executing build.sh with southbridge: \$TARGET_SOUTHBRIDGE"
 
           chmod +x build.sh
-          ./build.sh --option 3 use="\$TARGET_PROFILE" lto="\$TARGET_LTO"
+          ./build.sh --option 3 use="\$TARGET_PROFILE" lto="\$TARGET_LTO" southbridge="\$TARGET_SOUTHBRIDGE"
 
           echo "Packaging build artifacts..."
 
           ARTIFACT_BASENAME="\$(cat out/artifact_name.txt 2>/dev/null || true)"
           if [[ -z "\$ARTIFACT_BASENAME" ]]; then
-            ARTIFACT_BASENAME="Strawberry-\${TARGET_LTO}-\${TARGET_PROFILE}-LTS"
+            ARTIFACT_SOUTHBRIDGE_SUFFIX=""
+            if [[ "\$TARGET_SOUTHBRIDGE" == "Baikal" ]]; then
+              ARTIFACT_SOUTHBRIDGE_SUFFIX="-Baikal"
+            fi
+            ARTIFACT_BASENAME="Strawberry-\${TARGET_LTO}-\${TARGET_PROFILE}\${ARTIFACT_SOUTHBRIDGE_SUFFIX}-LTS"
           fi
           ARTIFACT_FILE="\${ARTIFACT_BASENAME}.tar.gz"
 
