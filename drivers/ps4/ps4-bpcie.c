@@ -11,7 +11,7 @@
 #include <asm/irq_remapping.h>
 
 #include <asm/msi.h>
-
+#include <asm/apic.h>
 #include <asm/ps4.h>
 
 #include "baikal.h"
@@ -36,6 +36,26 @@ static void bpcie_msi_domain_set_desc(msi_alloc_info_t *arg, struct msi_desc *de
 
 /*static inline */void glue_write32(struct bpcie_dev *sc, u32 offset, u32 value) {
 	iowrite32(value, sc->bar2 + offset);
+}
+
+static void bpcie_irq_msi_compose_msg(struct irq_data *data, struct msi_msg *msg)
+{
+	struct bpcie_dev *sc = data->chip_data;
+	int i;
+
+	memset(msg, 0, sizeof(*msg));
+	msg->address_hi = X86_MSI_BASE_ADDRESS_HIGH;
+	msg->address_lo = 0xfee00000;
+
+	msg->data = data->irq - 1;
+	if (sc) {
+		for (i = 0; i < 100; i++) {
+			if (sc->irq_map[i] == data->irq) {
+				msg->data = i;
+				break;
+			}
+		}
+	}
 }
 
 static void bpcie_msi_write_msg(struct irq_data *data, struct msi_msg *msg)
@@ -75,7 +95,7 @@ static struct irq_chip bpcie_msi_controller = {
 	.irq_ack = irq_chip_ack_parent,
 	.irq_set_affinity = msi_domain_set_affinity,
 	.irq_retrigger = irq_chip_retrigger_hierarchy,
-	.irq_compose_msi_msg = irq_msi_compose_msg,
+	.irq_compose_msi_msg = bpcie_irq_msi_compose_msg,
 	.irq_write_msi_msg = bpcie_msi_write_msg,
 	.flags = IRQCHIP_SKIP_SET_WAKE,
 };
@@ -144,10 +164,21 @@ static int bpcie_msi_init(struct irq_domain *domain,
 			 struct msi_domain_info *info, unsigned int virq,
 			 irq_hw_number_t hwirq, msi_alloc_info_t *arg)
 {
-	pr_devel("bpcie_msi_init(%p, %p, %d, 0x%lx, %p)\n", domain, info, virq, hwirq, arg);
+	struct bpcie_dev *sc = info->chip_data;
 
 	irq_domain_set_info(domain, virq, hwirq, info->chip, info->chip_data,
 			bpcie_handle_edge_irq/*handle_edge_irq*/, NULL, "edge");
+
+	if (sc) {
+		int i;
+		for (i = 0; i < 100; i++) {
+			if (sc->irq_map[i] == -1) {
+				sc->irq_map[i] = virq;
+				break;
+			}
+		}
+	}
+
 	return 0;
 }
 
@@ -160,6 +191,7 @@ static void bpcie_msi_free(struct irq_domain *domain,
 static int bpcie_msi_prepare(struct irq_domain *domain, struct device *dev,
 			     int nvec, msi_alloc_info_t *arg)
 {
+	init_irq_alloc_info(arg, NULL);
 	arg->type = X86_IRQ_ALLOC_TYPE_PCI_MSI;
 	return 0;
 }
@@ -186,6 +218,7 @@ static void bpcie_msi_domain_set_desc(msi_alloc_info_t *arg,
 	struct pci_dev *dev = msi_desc_to_pci_dev(desc);
 	arg->type = X86_IRQ_ALLOC_TYPE_PCI_MSI;
 	arg->desc = desc;
+	arg->devid = pci_dev_id(dev);
 	//Our hwirq number is (slot << 8) | (func << 5) plus subfunction.
 	// Subfunction is usually 0 and implicitly increments per hwirq,
 	//but can also be 0xff to indicate that this is a shared IRQ.
@@ -203,6 +236,8 @@ static struct irq_domain *bpcie_create_irq_domain(struct bpcie_dev *sc,
 {
 	struct irq_domain *parent;
 	struct irq_domain *d;
+	struct fwnode_handle *fn;
+	struct irq_fwspec fwspec;
 
 	dev_info(&pdev->dev, "bpcie_create_irq_domain\n");
 	if (x86_vector_domain == NULL) {
@@ -211,24 +246,31 @@ static struct irq_domain *bpcie_create_irq_domain(struct bpcie_dev *sc,
 	}
 
 	bpcie_msi_domain_info.chip_data = (void *)sc;
-	bpcie_msi_domain_info.flags &= ~MSI_FLAG_MULTI_PCI_MSI;
-	bpcie_msi_controller.name = "Baikal-MSI";
 
-	parent = dev_get_msi_domain(&pdev->dev);
-	if (parent) {
-		sc_info("Parent found! Switching to IR-Baikal-MSI.\n");
+	fn = irq_domain_alloc_named_id_fwnode("Baikal-MSI", pci_dev_id(pdev));
+	if (!fn)
+		return NULL;
+
+	fwspec.fwnode = fn;
+	fwspec.param_count = 1;
+	fwspec.param[0] = pci_dev_id(pdev);
+
+	parent = irq_find_matching_fwspec(&fwspec, DOMAIN_BUS_ANY);
+
+	if (parent && parent != x86_vector_domain) {
 		bpcie_msi_domain_info.flags |= MSI_FLAG_MULTI_PCI_MSI;
 		bpcie_msi_controller.name = "IR-Baikal-MSI";
 	} else {
-		sc_info("no parent, assigning x86_vector_domain.\n");
 		parent = x86_vector_domain;
 	}
 
-	d = msi_create_irq_domain(NULL, &bpcie_msi_domain_info, parent);
+	d = msi_create_irq_domain(fn, &bpcie_msi_domain_info, parent);
 	if (d)
 		dev_set_msi_domain(&pdev->dev, d);
-	else
+	else {
 		dev_err(&pdev->dev, "bpcie: failed to create irq domain\n");
+		irq_domain_free_fwnode(fn);
+	}
 
 	return d;
 }
@@ -430,6 +472,7 @@ static int bpcie_probe(struct pci_dev *dev, const struct pci_device_id *id) {
 		goto disable_dev;
 	}
 	sc->pdev = dev;
+	memset(sc->irq_map, -1, sizeof(sc->irq_map));
 	pci_set_drvdata(dev, sc);
 
 	// eMMC ... unused?
@@ -447,16 +490,14 @@ static int bpcie_probe(struct pci_dev *dev, const struct pci_device_id *id) {
 
 	if ((ret = bpcie_glue_init(sc)) < 0)
 		goto free_bars;
-	if ((ret = bpcie_uart_init(sc)) < 0)
-		goto remove_glue;
+	/* if ((ret = bpcie_uart_init(sc)) < 0)
+		goto remove_glue; */
 	if ((ret = bpcie_icc_init(sc)) < 0)
-		goto remove_uart;
+		goto remove_glue;
 
 	WRITE_ONCE(bpcie_initialized, true);
 	return 0;
 
-remove_uart:
-	bpcie_uart_remove(sc);
 remove_glue:
 	bpcie_glue_remove(sc);
 free_bars:
@@ -478,7 +519,7 @@ static void bpcie_remove(struct pci_dev *dev) {
 
 	WRITE_ONCE(bpcie_initialized, false);
 	bpcie_icc_remove(sc);
-	bpcie_uart_remove(sc);
+	//bpcie_uart_remove(sc);
 	bpcie_glue_remove(sc);
 
 	if (sc->bar0)
@@ -497,7 +538,7 @@ static int bpcie_suspend(struct pci_dev *dev, pm_message_t state) {
 	sc = pci_get_drvdata(dev);
 
 	bpcie_icc_suspend(sc, state);
-	bpcie_uart_suspend(sc, state);
+	//bpcie_uart_suspend(sc, state);
 	bpcie_glue_suspend(sc, state);
 	return 0;
 }
@@ -508,7 +549,7 @@ static int bpcie_resume(struct pci_dev *dev) {
 
 	bpcie_icc_resume(sc);
 	bpcie_glue_resume(sc);
-	bpcie_uart_resume(sc);
+	//bpcie_uart_resume(sc);
 	return 0;
 }
 #endif
