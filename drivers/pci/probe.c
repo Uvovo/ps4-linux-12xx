@@ -24,6 +24,9 @@
 #include <linux/pm_runtime.h>
 #include <linux/bitfield.h>
 #include <trace/events/pci.h>
+#ifdef CONFIG_X86_PS4
+#include <asm/setup.h>
+#endif
 #include "pci.h"
 
 static struct resource busn_resource = {
@@ -2853,6 +2856,32 @@ static int only_one_child(struct pci_bus *bus)
 	return 0;
 }
 
+/* It can be arbitrary (above 2). FreeBSD uses 20, so use that too. */
+#define AEOLIA_SLOT_NUM 20
+
+#ifdef CONFIG_X86_PS4
+static bool ps4_skip_phantom_sony_dev(struct pci_bus *bus, unsigned int devfn)
+{
+	u32 id;
+
+	if (boot_params.hdr.hardware_subarch != X86_SUBARCH_PS4)
+		return false;
+
+	if (PCI_SLOT(devfn) == AEOLIA_SLOT_NUM)
+		return false;
+
+	if (!pci_bus_read_dev_vendor_id(bus, devfn, &id, 60 * 1000))
+		return false;
+
+	return (id & 0xffff) == PCI_VENDOR_ID_SONY;
+}
+#else
+static inline bool ps4_skip_phantom_sony_dev(struct pci_bus *bus, unsigned int devfn)
+{
+	return false;
+}
+#endif
+
 /**
  * pci_scan_slot - Scan a PCI slot on a bus for devices
  * @bus: PCI bus to scan
@@ -2872,7 +2901,15 @@ int pci_scan_slot(struct pci_bus *bus, int devfn)
 	if (only_one_child(bus) && (devfn > 0))
 		return 0; /* Already scanned the entire slot */
 
+	if (ps4_skip_phantom_sony_dev(bus, devfn))
+		return 0;
+
 	do {
+		if (fn > 0 && ps4_skip_phantom_sony_dev(bus, devfn + fn)) {
+			fn = next_fn(bus, dev, fn);
+			continue;
+		}
+
 		dev = pci_scan_single_device(bus, devfn + fn);
 		if (dev) {
 			if (!pci_dev_is_added(dev))
