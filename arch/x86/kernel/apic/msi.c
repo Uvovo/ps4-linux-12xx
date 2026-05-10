@@ -23,6 +23,14 @@
 
 struct irq_domain *x86_pci_msi_default_domain __ro_after_init;
 
+#ifdef CONFIG_X86_PS4_BAIKAL
+void irq_msi_compose_msg(struct irq_data *data, struct msi_msg *msg)
+{
+	__irq_msi_compose_msg(irqd_cfg(data), msg, false);
+}
+EXPORT_SYMBOL_GPL(irq_msi_compose_msg);
+#endif
+
 static void irq_msi_update_msg(struct irq_data *irqd, struct irq_cfg *cfg)
 {
 	struct msi_msg msg[2] = { [1] = { }, };
