@@ -26,6 +26,7 @@
 #include <trace/events/pci.h>
 #ifdef CONFIG_X86_PS4
 #include <asm/setup.h>
+#include <asm/processor.h>
 #endif
 #include "pci.h"
 
@@ -2864,7 +2865,13 @@ static bool ps4_skip_phantom_sony_dev(struct pci_bus *bus, unsigned int devfn)
 {
 	u32 id;
 
-	if (boot_params.hdr.hardware_subarch != X86_SUBARCH_PS4)
+	/*
+	 * Check hardware_subarch first; fall back to CPU family detection
+	 * in case the bootloader doesn't set the subarch field.
+	 */
+	if (boot_params.hdr.hardware_subarch != X86_SUBARCH_PS4 &&
+	    !(boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
+	      boot_cpu_data.x86 == 0x16))
 		return false;
 
 	if (PCI_SLOT(devfn) == AEOLIA_SLOT_NUM)
