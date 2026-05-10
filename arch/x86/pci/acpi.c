@@ -11,6 +11,7 @@
 #include <linux/pci-acpi.h>
 #include <asm/numa.h>
 #include <asm/pci_x86.h>
+#include <asm/processor.h>
 
 struct pci_root_info {
 	struct acpi_pci_root_info common;
@@ -201,6 +202,21 @@ void __init pci_acpi_crs_quirks(void)
 
 	if (year >= 0 && year < 2008 && iomem_resource.end <= 0xffffffff)
 		pci_use_crs = false;
+
+#ifdef CONFIG_X86_PS4
+	/*
+	 * PS4 (Aeolia/Baikal) ACPI _CRS for the PCI root bridge is broken:
+	 * it provides no IO or MEM windows.  When pci_use_crs is true the
+	 * root bus ends up with only [bus 00-ff] and every device BAR fails
+	 * "can't claim; no compatible bridge window".  Force nocrs so
+	 * x86_pci_root_bus_resources() supplies full ioport/iomem defaults.
+	 */
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
+	    boot_cpu_data.x86 == 0x16) {
+		pci_use_crs = false;
+		pci_use_e820 = false;
+	}
+#endif
 
 	/*
 	 * Some firmware includes unusable space (host bridge registers,
