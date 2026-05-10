@@ -28,6 +28,7 @@
 #include <asm/x86_init.h>
 #include <asm/io_apic.h>
 #include <asm/irq_remapping.h>
+#include <asm/processor.h>
 #include <asm/set_memory.h>
 #include <asm/sev.h>
 
@@ -1962,10 +1963,19 @@ static int __init init_iommu_one_late(struct amd_iommu *iommu)
 
 	init_translation_status(iommu);
 	if (translation_pre_enabled(iommu) && !is_kdump_kernel()) {
-		iommu_disable(iommu);
-		clear_translation_pre_enabled(iommu);
-		pr_warn("Translation was enabled for IOMMU:%d but we are not in kdump mode\n",
-			iommu->index);
+#ifdef CONFIG_X86_PS4_BAIKAL
+		if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
+		    boot_cpu_data.x86 == 0x16) {
+			pr_info("AMD-Vi: PS4 Baikal: IOMMU:%d pre-enabled, preserving state\n",
+				iommu->index);
+		} else
+#endif
+		{
+			iommu_disable(iommu);
+			clear_translation_pre_enabled(iommu);
+			pr_warn("Translation was enabled for IOMMU:%d but we are not in kdump mode\n",
+				iommu->index);
+		}
 	}
 	if (amd_iommu_pre_enabled)
 		amd_iommu_pre_enabled = translation_pre_enabled(iommu);
@@ -3268,6 +3278,20 @@ static int __init early_amd_iommu_init(void)
 	}
 
 	/* Disable any previously enabled IOMMUs */
+#ifdef CONFIG_X86_PS4_BAIKAL
+	/*
+	 * On PS4 Baikal, the PS4 OS leaves the IOMMU enabled with valid IR
+	 * tables. If we disable and re-init, the Baikal device's MSI config
+	 * still targets old IR entries → IO_PAGE_FAULT. Skip disable to
+	 * preserve existing IR table entries. The kernel will take ownership
+	 * and manage new allocations on top of the existing state.
+	 */
+	if (amd_iommu_pre_enabled &&
+	    boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
+	    boot_cpu_data.x86 == 0x16) {
+		pr_info("AMD-Vi: PS4 Baikal: keeping IOMMU enabled to preserve IR tables\n");
+	} else
+#endif
 	if (!is_kdump_kernel() || amd_iommu_disabled)
 		disable_iommus();
 
@@ -3609,6 +3633,12 @@ static bool amd_iommu_sme_check(void)
 void __init amd_iommu_detect(void)
 {
 	int ret;
+
+#ifdef CONFIG_X86_PS4_BAIKAL
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
+	    boot_cpu_data.x86 == 0x16)
+		goto disable_snp;
+#endif
 
 	if (no_iommu || (iommu_detected && !gart_iommu_aperture))
 		goto disable_snp;
