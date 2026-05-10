@@ -45,6 +45,8 @@ MAX_JOBS="$(nproc)"
 lto_label() {
     if [[ "$LTO_FLAVOR" == "full" ]]; then
         echo "FullLTO"
+    elif [[ "$LTO_FLAVOR" == "none" ]]; then
+        echo "NoLTO"
     else
         echo "ThinLTO"
     fi
@@ -172,8 +174,9 @@ for arg in "$@"; do
             case "${LTO_ARG,,}" in
                 thinlto|thin) LTO_FLAVOR="thin" ;;
                 fulllto|full) LTO_FLAVOR="full" ;;
+                none|no|off|disabled) LTO_FLAVOR="none" ;;
                 *)
-                    echo "Unknown LTO flavor: ${LTO_ARG}. Valid: ThinLTO, FullLTO"
+                    echo "Unknown LTO flavor: ${LTO_ARG}. Valid: ThinLTO, FullLTO, none"
                     exit 1
                     ;;
             esac
@@ -333,8 +336,8 @@ fi
 if [[ -f config ]]; then
     echo -e "\e[1;34m[*]\e[0m Moving 'config' -> '.config'"
     mv config .config
-else
-    echo -e "\e[1;31mERROR:\e[0m No .config found." >&2
+elif [[ ! -f .config ]]; then
+    echo -e "\e[1;31mERROR:\e[0m No .config or 'config' found." >&2
     exit 1
 fi
 
@@ -418,6 +421,10 @@ if [[ "$DO_BUILD" == "1" ]]; then
         echo -e "\e[1;34m[*]\e[0m Enabling FullLTO..."
         scripts/config --disable CONFIG_LTO_CLANG_THIN
         scripts/config --enable  CONFIG_LTO_CLANG_FULL
+    elif [[ "$LTO_FLAVOR" == "none" ]]; then
+        echo -e "\e[1;34m[*]\e[0m Disabling LTO..."
+        scripts/config --disable CONFIG_LTO_CLANG_THIN
+        scripts/config --disable CONFIG_LTO_CLANG_FULL
     else
         echo -e "\e[1;34m[*]\e[0m Enabling ThinLTO..."
         scripts/config --enable  CONFIG_LTO_CLANG_THIN
@@ -568,6 +575,7 @@ if [[ "$DO_BUILD" == "1" ]]; then
     scripts/config --disable CONFIG_HARDENED_USERCOPY_DEFAULT_ON
     scripts/config --disable CONFIG_SECURITY_DMESG_RESTRICT
     scripts/config --disable CONFIG_IOMMU_DEFAULT_DMA_STRICT
+    scripts/config --disable CONFIG_IOMMU_DEFAULT_PASSTHROUGH
     scripts/config --enable  CONFIG_IOMMU_DEFAULT_DMA_LAZY
 
     # I/O schedulers
