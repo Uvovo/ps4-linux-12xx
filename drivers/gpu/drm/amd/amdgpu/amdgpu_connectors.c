@@ -1600,7 +1600,8 @@ static const struct drm_connector_funcs amdgpu_ps4_dp_connector_funcs = {
 	.dpms = drm_helper_connector_dpms,
 	.detect = ps4_bridge_detect,
 	.fill_modes = drm_helper_probe_single_connector_modes,
-	//.set_property = amdgpu_connector_set_property,
+	.set_property = amdgpu_connector_set_property,
+	.early_unregister = amdgpu_connector_unregister,
 	.destroy = amdgpu_connector_destroy,
 	.force = amdgpu_connector_dvi_force,
 	.late_register = amdgpu_connector_late_register,
@@ -1645,6 +1646,19 @@ amdgpu_connector_add(struct amdgpu_device *adev,
 	if (connector_type == DRM_MODE_CONNECTOR_Unknown)
 		return;
 
+#ifdef CONFIG_X86_PS4
+	/* Liverpool/Gladius exposes a single internal DP path via an HDMI bridge. */
+	if (adev->asic_type == CHIP_LIVERPOOL ||
+	    adev->asic_type == CHIP_GLADIUS) {
+		if (connector_type != DRM_MODE_CONNECTOR_DisplayPort)
+			return;
+
+		connector_type = DRM_MODE_CONNECTOR_HDMIA;
+		is_dp_bridge = true;
+		is_ps4_bridge = true;
+	}
+#endif
+
 	/* see if we already added it */
 	drm_connector_list_iter_begin(dev, &iter);
 	drm_for_each_connector_iter(connector, &iter) {
@@ -1686,18 +1700,6 @@ amdgpu_connector_add(struct amdgpu_device *adev,
 	amdgpu_connector = kzalloc_obj(struct amdgpu_connector);
 	if (!amdgpu_connector)
 		return;
-
-	/* Liverpool (PS4) has an DP bridge which needs a special driver, and
-	 * a fake HDMI port that doesn't really exist. */
-	if (adev->asic_type == CHIP_LIVERPOOL || adev->asic_type == CHIP_GLADIUS) {
-		if (connector_type == DRM_MODE_CONNECTOR_DisplayPort) {
-			connector_type = DRM_MODE_CONNECTOR_HDMIA;
-			is_dp_bridge = true;
-			is_ps4_bridge = true;
-		} else {
-			return;
-		}
-	}
 
 	connector = &amdgpu_connector->base;
 

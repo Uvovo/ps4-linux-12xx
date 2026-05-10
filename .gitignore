@@ -171,3 +171,4 @@ compile_commands.json
 
 # Documentation toolchain
 sphinx_*/
+extra_firmware/amdgpu/
