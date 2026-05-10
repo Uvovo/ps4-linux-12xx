@@ -49,7 +49,7 @@ static void bpcie_msi_write_msg(struct irq_data *data, struct msi_msg *msg)
 		return;
 	}
 
-	dev_info(&sc->pdev->dev, "bpcie_msi_write_msg(%08x, %08x) mask=0x%x irq=%d hwirq=0x%lx %p\n",
+	dev_dbg(&sc->pdev->dev, "bpcie_msi_write_msg(%08x, %08x) mask=0x%x irq=%d hwirq=0x%lx %p\n",
 	       msg->address_lo, msg->data, data->mask, data->irq, data->hwirq, sc);
 
 	desc = irq_data_get_msi_desc(data);
@@ -124,9 +124,6 @@ static void bpcie_handle_edge_irq(struct irq_desc *desc)
 	raw_spin_unlock(&desc->lock);
 
 	unsigned int subfunc_mask = mask & ~(vector_read >> shift);
-	if (subfunc_mask)
-		pr_info_ratelimited("bpcie_handle_edge_irq: func=%d vec_read=0x%x subfunc_mask=0x%x\n",
-				    func, vector_read, subfunc_mask);
 	//sc_dbg("subfunc_mask=0x%X, vector_read=0x%X\n", subfunc_mask, vector_read);
 	unsigned int i;
 	for (i = 0; i < 32; i++) {
@@ -367,7 +364,7 @@ static int bpcie_glue_init(struct bpcie_dev *sc)
 		bpcie_glue_remove(sc);
 		return -EIO;
 	}
-	sc_info("dev->irq=%d nvec=%d\n", sc->pdev->irq, sc->nvec);
+	sc_dbg("dev->irq=%d nvec=%d\n", sc->pdev->irq, sc->nvec);
 
 	return 0;
 }
