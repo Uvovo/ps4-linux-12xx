@@ -554,12 +554,9 @@ static ssize_t procDriverCmdWrite(struct file *file, const char __user *buffer,
 
 
 	kalMemSet(g_aucProcBuf, 0, u4CopySize);
-	if (u4CopySize >= (count+1))
-		u4CopySize = count;
-	else
-		u4CopySize -= 1;
-
-	if (copy_from_user(g_aucProcBuf, buffer, u4CopySize)) {
+	if (u4CopySize > sizeof(g_aucProcBuf) - 1)
+		u4CopySize = sizeof(g_aucProcBuf) - 1;
+	if (__copy_from_user(g_aucProcBuf, buffer, u4CopySize)) {
 		DBGLOG(INIT, ERROR, "error of copy from user\n");
 		return -EFAULT;
 	}
@@ -591,7 +588,7 @@ static ssize_t procDbgLevelWrite(struct file *file, const char __user *buffer,
 	else
 		u4CopySize -= 1;
 
-	if (copy_from_user(g_aucProcBuf, buffer, u4CopySize)) {
+	if (__copy_from_user(g_aucProcBuf, buffer, u4CopySize)) {
 		DBGLOG(INIT, ERROR, "error of copy from user\n");
 		return -EFAULT;
 	}
@@ -1194,7 +1191,7 @@ static ssize_t procRoamWrite(struct file *file, const char __user *buffer,
 	else
 		u4CopySize -= 1;
 
-	if (copy_from_user(g_aucProcBuf, buffer, u4CopySize)) {
+	if (__copy_from_user(g_aucProcBuf, buffer, u4CopySize)) {
 		DBGLOG(INIT, ERROR, "error of copy from user\n");
 		return -EFAULT;
 	}
@@ -1273,7 +1270,7 @@ static ssize_t procCountryWrite(struct file *file, const char __user *buffer,
 	else
 		u4CopySize -= 1;
 
-	if (copy_from_user(g_aucProcBuf, buffer, u4CopySize)) {
+	if (__copy_from_user(g_aucProcBuf, buffer, u4CopySize)) {
 		DBGLOG(INIT, ERROR, "error of copy from user\n");
 		return -EFAULT;
 	}
