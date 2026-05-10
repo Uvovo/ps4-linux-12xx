@@ -119,9 +119,6 @@ static int xhci_aeolia_probe_one(struct pci_dev *dev, int index)
 	if (!hcd)
 		return -ENOMEM;
 
-	if (xhci_aeolia_is_baikal(dev))
-		hcd->msi_enabled = 1;
-
 	hcd->rsrc_start = pci_resource_start(dev, 2 * index);
 	hcd->rsrc_len = pci_resource_len(dev, 2 * index);
 
@@ -148,9 +145,6 @@ static int xhci_aeolia_probe_one(struct pci_dev *dev, int index)
 		retval = -ENOMEM;
 		goto unmap_registers;
 	}
-
-	if (xhci_aeolia_is_baikal(dev))
-		xhci->shared_hcd->msi_enabled = 1;
 
 	retval = usb_add_hcd(hcd, irq, IRQF_SHARED);
 	if (retval)
