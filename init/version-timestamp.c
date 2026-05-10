@@ -37,7 +37,7 @@ const char linux_banner[] =
 	"\n"
 	"  Strawberry PS4 Linux\n"
 	"  Platform  : Sony PlayStation 4\n"
-	"  Focus     : AEOLIA / BELIZE\n"
+	"  Focus     : BAIKAL\n"
 	"  Release   : " UTS_RELEASE "\n"
 	"  Builder   : " LINUX_COMPILE_BY "@" LINUX_COMPILE_HOST "\n"
 	"  Toolchain : " LINUX_COMPILER "\n"
