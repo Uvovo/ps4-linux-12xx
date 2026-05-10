@@ -24,6 +24,10 @@
 #include <linux/pm_runtime.h>
 #include <linux/bitfield.h>
 #include <trace/events/pci.h>
+#ifdef CONFIG_X86_PS4
+#include <asm/setup.h>
+#include <asm/processor.h>
+#endif
 #include "pci.h"
 
 static struct resource busn_resource = {
@@ -2853,8 +2857,37 @@ static int only_one_child(struct pci_bus *bus)
 	return 0;
 }
 
-// It can be arbitrary (above 2). Freebsd uses 20, so use that too.
+/* It can be arbitrary (above 2). FreeBSD uses 20, so use that too. */
 #define AEOLIA_SLOT_NUM 20
+
+#ifdef CONFIG_X86_PS4
+static bool ps4_skip_phantom_sony_dev(struct pci_bus *bus, unsigned int devfn)
+{
+	u32 id;
+
+	/*
+	 * Check hardware_subarch first; fall back to CPU family detection
+	 * in case the bootloader doesn't set the subarch field.
+	 */
+	if (boot_params.hdr.hardware_subarch != X86_SUBARCH_PS4 &&
+	    !(boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
+	      boot_cpu_data.x86 == 0x16))
+		return false;
+
+	if (PCI_SLOT(devfn) == AEOLIA_SLOT_NUM)
+		return false;
+
+	if (!pci_bus_read_dev_vendor_id(bus, devfn, &id, 60 * 1000))
+		return false;
+
+	return (id & 0xffff) == PCI_VENDOR_ID_SONY;
+}
+#else
+static inline bool ps4_skip_phantom_sony_dev(struct pci_bus *bus, unsigned int devfn)
+{
+	return false;
+}
+#endif
 
 /**
  * pci_scan_slot - Scan a PCI slot on a bus for devices
@@ -2872,23 +2905,15 @@ int pci_scan_slot(struct pci_bus *bus, int devfn)
 	struct pci_dev *dev;
 	int fn = 0, nr = 0;
 
-	u32 l;
-
 	if (only_one_child(bus) && (devfn > 0))
 		return 0; /* Already scanned the entire slot */
 
-	// skip phantom Aeolia devices that bleed through the PCI space
-	if (PCI_SLOT(devfn) != AEOLIA_SLOT_NUM &&
-	    pci_bus_read_dev_vendor_id(bus, devfn, &l, 60*1000) &&
-	    (l & 0xffff) == PCI_VENDOR_ID_SONY) {
+	if (ps4_skip_phantom_sony_dev(bus, devfn))
 		return 0;
-	}
 
 	do {
-		if (PCI_SLOT(devfn) != AEOLIA_SLOT_NUM &&
-		    pci_bus_read_dev_vendor_id(bus, devfn + fn, &l, 60*1000) &&
-		    (l & 0xffff) == PCI_VENDOR_ID_SONY) {
-				fn = next_fn(bus, dev, fn);
+		if (fn > 0 && ps4_skip_phantom_sony_dev(bus, devfn + fn)) {
+			fn = next_fn(bus, dev, fn);
 			continue;
 		}
 
