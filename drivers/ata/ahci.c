@@ -116,7 +116,7 @@ static const struct scsi_host_template ahci_sht = {
 };
 
 #ifdef CONFIG_X86_PS4
-#define PS4_AHCI_DMA_BOUNDARY	0xB7FFFFFFUL
+#define PS4_AHCI_DMA_BOUNDARY	0x7FFFFFFFUL
 
 static const struct scsi_host_template ahci_ps4_sht = {
 	__ATA_BASE_SHT("ahci"),
