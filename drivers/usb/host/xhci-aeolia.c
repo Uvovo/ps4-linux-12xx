@@ -28,6 +28,7 @@ static struct hc_driver __read_mostly xhci_aeolia_hc_driver;
 struct aeolia_xhci {
 	struct ata_host *host;
 	int nr_irqs;
+	bool baikal_msix_path;
 	struct usb_hcd *hcd[NR_DEVICES];
 };
 
@@ -78,23 +79,53 @@ static int xhci_aeolia_irqnum(struct aeolia_xhci *axhci,
 	if (axhci->nr_irqs <= 1 || index >= axhci->nr_irqs)
 		return dev->irq;
 
+	if (axhci->baikal_msix_path)
+		return pci_irq_vector(dev, index);
+
 	return dev->irq + index;
 }
 
 static int xhci_aeolia_assign_irqs(struct pci_dev *dev)
 {
-	if (xhci_aeolia_is_baikal(dev))
+	struct aeolia_xhci *axhci = pci_get_drvdata(dev);
+	int ret;
+
+	if (xhci_aeolia_is_baikal(dev)) {
+		ret = pci_alloc_irq_vectors(dev, NR_DEVICES, INT_MAX,
+					    PCI_IRQ_MSIX | PCI_IRQ_MSI);
+		if (ret >= NR_DEVICES) {
+			axhci->baikal_msix_path = true;
+			dev_info(&dev->dev,
+				 "xhci_aeolia: allocated %d vectors via PCI MSI%s\n",
+				 ret, dev->msix_enabled ? "-X" : "");
+			return ret;
+		}
+		if (ret > 0)
+			pci_free_irq_vectors(dev);
+
+		dev_warn(&dev->dev,
+			 "xhci_aeolia: MSI-X alloc failed (%d), falling back to bpcie\n",
+			 ret);
+		axhci->baikal_msix_path = false;
 		return bpcie_assign_irqs(dev, NR_DEVICES);
+	}
 
 	return apcie_assign_irqs(dev, NR_DEVICES);
 }
 
 static void xhci_aeolia_free_irqs(struct pci_dev *dev, int nr_irqs)
 {
-	if (xhci_aeolia_is_baikal(dev))
-		bpcie_free_irqs(dev->irq, nr_irqs);
-	else
-		apcie_free_irqs(dev->irq, nr_irqs);
+	struct aeolia_xhci *axhci = pci_get_drvdata(dev);
+
+	if (xhci_aeolia_is_baikal(dev)) {
+		if (axhci && axhci->baikal_msix_path)
+			pci_free_irq_vectors(dev);
+		else
+			bpcie_free_irqs(dev->irq, nr_irqs);
+		return;
+	}
+
+	apcie_free_irqs(dev->irq, nr_irqs);
 }
 
 static int xhci_aeolia_probe_one(struct pci_dev *dev, int index)
