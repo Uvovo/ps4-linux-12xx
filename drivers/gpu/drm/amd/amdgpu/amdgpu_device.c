@@ -1580,6 +1580,13 @@ static int amdgpu_device_asic_init(struct amdgpu_device *adev)
 	int ret;
 
 	amdgpu_asic_pre_asic_init(adev);
+
+	/* PS4 Liverpool/Gladius have no AtomBIOS — skip the atom init
+	 * entirely.  The GPU reset path (cik_asic_reset) is already a
+	 * no-op for APUs, so there is nothing to re-POST here. */
+	if (adev->asic_type == CHIP_LIVERPOOL ||
+	    adev->asic_type == CHIP_GLADIUS)
+		return 0;
 	flags = amdgpu_device_get_vbios_flags(adev);
 	optional = !!(flags & (AMDGPU_VBIOS_OPTIONAL | AMDGPU_VBIOS_SKIP));
 
