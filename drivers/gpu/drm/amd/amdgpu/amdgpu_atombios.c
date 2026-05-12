@@ -36,6 +36,10 @@
 #include "atombios_encoders.h"
 #include "bif/bif_4_1_d.h"
 
+#ifdef CONFIG_X86_PS4
+void ps4_vbios_patch_dig_transmitter_info(struct amdgpu_device *adev);
+#endif
+
 static struct amdgpu_i2c_bus_rec amdgpu_atombios_get_bus_rec_for_i2c_gpio(ATOM_GPIO_I2C_ASSIGMENT *gpio)
 {
 	struct amdgpu_i2c_bus_rec i2c;
@@ -1910,6 +1914,12 @@ int amdgpu_atombios_init(struct amdgpu_device *adev)
 	atom_card_info->mc_write = cail_mc_write;
 	atom_card_info->pll_read = cail_pll_read;
 	atom_card_info->pll_write = cail_pll_write;
+
+#ifdef CONFIG_X86_PS4
+	/* Patch Belize/Gladius VBIOS: inject missing DIGTransmitterInfo table
+	 * before the ATOMBIOS interpreter parses the data tables. */
+	ps4_vbios_patch_dig_transmitter_info(adev);
+#endif
 
 	adev->mode_info.atom_context = amdgpu_atom_parse(atom_card_info, adev->bios);
 	if (!adev->mode_info.atom_context) {

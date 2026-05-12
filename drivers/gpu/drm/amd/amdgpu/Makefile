@@ -315,7 +315,7 @@ amdgpu-$(CONFIG_COMPAT) += amdgpu_ioc32.o
 amdgpu-$(CONFIG_VGA_SWITCHEROO) += amdgpu_atpx_handler.o
 amdgpu-$(CONFIG_ACPI) += amdgpu_acpi.o
 amdgpu-$(CONFIG_HMM_MIRROR) += amdgpu_hmm.o
-amdgpu-$(CONFIG_X86_PS4) += ps4_bridge.o
+amdgpu-$(CONFIG_X86_PS4) += ps4_bridge.o ps4_vbios_patch.o
 
 include $(FULL_AMD_PATH)/pm/Makefile
 
