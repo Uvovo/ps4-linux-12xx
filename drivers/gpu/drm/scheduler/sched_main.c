@@ -862,6 +862,12 @@ void drm_sched_job_arm(struct drm_sched_job *job)
 
 	BUG_ON(!entity);
 	drm_sched_entity_select_rq(entity);
+
+	if (!entity->rq) {
+		pr_warn_ratelimited("drm_sched: entity has no run queue (all schedulers down?), skipping job arm\n");
+		return;
+	}
+
 	sched = entity->rq->sched;
 
 	job->sched = sched;

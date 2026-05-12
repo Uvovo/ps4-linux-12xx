@@ -397,6 +397,8 @@ static u32 amdgpu_atombios_crtc_adjust_pll(struct drm_crtc *crtc,
 			amdgpu_atom_execute_table(adev->mode_info.atom_context,
 					   index, (uint32_t *)&args, sizeof(args));
 			adjusted_clock = le16_to_cpu(args.v1.usPixelClock) * 10;
+			if (!adjusted_clock)
+				adjusted_clock = mode->clock;
 			break;
 		case 3:
 			args.v3.sInput.usPixelClock = cpu_to_le16(clock / 10);
@@ -430,6 +432,8 @@ static u32 amdgpu_atombios_crtc_adjust_pll(struct drm_crtc *crtc,
 			amdgpu_atom_execute_table(adev->mode_info.atom_context,
 					   index, (uint32_t *)&args, sizeof(args));
 			adjusted_clock = le32_to_cpu(args.v3.sOutput.ulDispPllFreq) * 10;
+			if (!adjusted_clock)
+				adjusted_clock = mode->clock;
 			if (args.v3.sOutput.ucRefDiv) {
 				amdgpu_crtc->pll_flags |= AMDGPU_PLL_USE_FRAC_FB_DIV;
 				amdgpu_crtc->pll_flags |= AMDGPU_PLL_USE_REF_DIV;

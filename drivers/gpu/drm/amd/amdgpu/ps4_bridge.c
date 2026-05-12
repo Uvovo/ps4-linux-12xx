@@ -970,7 +970,7 @@ int ps4_bridge_get_modes(struct drm_connector *connector)
 	{
 		const struct firmware *fw = NULL;
 
-		if (request_firmware(&fw, "edid/my_edid.bin",
+		if (firmware_request_nowarn(&fw, "edid/my_edid.bin",
 				      connector->dev->dev) == 0 && fw) {
 			DRM_DEBUG_KMS("ps4_bridge_get_modes: using firmware EDID "
 				      "(%zu bytes)\n", fw->size);
