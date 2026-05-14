@@ -1,5 +1,5 @@
 # Aeolia PCI devices
-# LISTED IN INIT ORDER \o/ ...  ._.
+# LISTED IN INIT ORDER \o/ ... ._.
 # N.B. this driver must be init'd before pretty much everything, but actual dependants are:
 # drivers/net/ethernet/marvell/sky2 (implements ps4-gbe)
 obj-y += ps4-apcie.o \
@@ -10,6 +10,7 @@ obj-y += ps4-apcie.o \
 obj-y += ps4-led.o
 obj-y += ps4-fan.o
 obj-y += ps4-mesa-lock.o
+obj-$(CONFIG_WATCHDOG) += ps4-wdt.o
 
 ifneq ($(PS4_MESA_LOCK_TOKEN),)
 CFLAGS_ps4-mesa-lock.o += -DPS4_MESA_LOCK_TOKEN=\"$(PS4_MESA_LOCK_TOKEN)\"

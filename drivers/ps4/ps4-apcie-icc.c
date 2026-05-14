@@ -6,6 +6,7 @@
 #include <linux/delay.h>
 #include <linux/fs.h>
 #include <linux/uaccess.h>
+#include <linux/module.h>
 #include <asm/ps4.h>
 #include "aeolia.h"
 
@@ -27,8 +28,10 @@ static bool icc_chrdev_registered;
 #define REQUEST (sc->icc.spm + APCIE_SPM_ICC_REQUEST)
 #define REPLY (sc->icc.spm + APCIE_SPM_ICC_REPLY)
 
-/* Seconds. Yes, some ICC requests can be slow. */
-int icc_timeout = 15;
+/* ICC command timeout in seconds. Some ICC requests can be slow. */
+static int icc_timeout = 15;
+module_param(icc_timeout, int, 0644);
+MODULE_PARM_DESC(icc_timeout, "ICC command timeout in seconds (default: 15)");
 
 int icc_i2c_init(struct apcie_dev *sc);
 void icc_i2c_remove(struct apcie_dev *sc);
@@ -111,8 +114,8 @@ static void handle_message(struct apcie_dev *sc)
 	rep_full = ioread32(REPLY + BUF_FULL);
 
 	if (rep_empty != 0 || rep_full != 1) {
-		sc_err("icc: reply buffer in bad state (%d, %d)\n",
-			rep_empty, rep_full);
+		dev_err_ratelimited(&sc->pdev->dev, "icc: reply buffer in bad state (%d, %d)\n",
+				    rep_empty, rep_full);
 		return;
 	}
 
@@ -120,33 +123,33 @@ static void handle_message(struct apcie_dev *sc)
 
 	if (msg.minor & ICC_EVENT) {
 		if (msg.magic != ICC_EVENT_MAGIC) {
-			sc_err("icc: event has bad magic\n");
+			dev_err_ratelimited(&sc->pdev->dev, "icc: event has bad magic\n");
 			dump_message(sc, APCIE_SPM_ICC_REPLY);
 			return;
 		}
 		handle_event(sc, &msg);
 	} else if (msg.minor & ICC_REPLY) {
 		if (msg.magic != ICC_MAGIC) {
-			sc_err("icc: reply has bad magic\n");
+			dev_err_ratelimited(&sc->pdev->dev, "icc: reply has bad magic\n");
 			dump_message(sc, APCIE_SPM_ICC_REPLY);
 			return;
 		}
 		spin_lock(&sc->icc.reply_lock);
 		if (!sc->icc.reply_pending) {
 			spin_unlock(&sc->icc.reply_lock);
-			sc_err("icc: unexpected reply\n");
+			dev_err_ratelimited(&sc->pdev->dev, "icc: unexpected reply\n");
 			dump_message(sc, APCIE_SPM_ICC_REPLY);
 			return;
 		}
 		if (msg.cookie != sc->icc.request.cookie) {
 			spin_unlock(&sc->icc.reply_lock);
-			sc_err("icc: reply has bad cookie %d\n", msg.cookie);
+			dev_err_ratelimited(&sc->pdev->dev, "icc: reply has bad cookie %d\n", msg.cookie);
 			dump_message(sc, APCIE_SPM_ICC_REPLY);
 			return;
 		}
 		if (msg.length < ICC_HDR_SIZE || msg.length > ICC_MAX_SIZE) {
 			spin_unlock(&sc->icc.reply_lock);
-			sc_err("icc: reply has bad length %d\n", msg.length);
+			dev_err_ratelimited(&sc->pdev->dev, "icc: reply has bad length %d\n", msg.length);
 			dump_message(sc, APCIE_SPM_ICC_REPLY);
 			return;
 		}
@@ -164,7 +167,7 @@ static void handle_message(struct apcie_dev *sc)
 		spin_unlock(&sc->icc.reply_lock);
 		wake_up(&sc->icc.wq);
 	} else {
-		sc_err("icc: unknown message arrived\n");
+		dev_err_ratelimited(&sc->pdev->dev, "icc: unknown message arrived\n");
 		dump_message(sc, APCIE_SPM_ICC_REPLY);
 	}
 }

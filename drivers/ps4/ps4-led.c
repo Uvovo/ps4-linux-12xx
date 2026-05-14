@@ -5,6 +5,13 @@
  * Copyright (C) rmux <armandas.kvietkus@proton.me>
  *
  * Based on the original LED control work by Saya and PsxItArch.
+ *
+ * Extended with brightness control for blue LED channel.
+ * The ICC LED protocol supports per-channel brightness (0x00-0xff)
+ * at specific offsets in the payload:
+ *   - Blue channel:   payload[7]
+ *   - White channel:  payload[14]
+ *   - Orange channel: payload[21] (varies by mode)
  */
 
 #include <linux/module.h>
@@ -27,6 +34,10 @@
  * Format is a proprietary binary protocol reverse-engineered
  * from hardware observation.
  *
+ * Brightness byte positions:
+ *   - Blue:   payload[7]  (0x00 = off, 0xff = full)
+ *   - White:  payload[14]
+ *
  */
 
 /** led_off: All LED channels disabled. Front panel dark. */
@@ -38,8 +49,8 @@ static const u8 led_off[] = {
 	0x05, 0x01, 0xff
 };
 
-/** led_blue: Solid blue. */
-static const u8 led_blue[] = {
+/** led_blue: Solid blue (brightness set at payload[7]). */
+static u8 led_blue[] = {
 	0x03, 0x01, 0x00, 0x00, 0x10, 0x01, 0x02, 0xff,
 	0x02, 0x01, 0x00, 0x11, 0x01, 0x02, 0x00, 0x02,
 	0x01, 0x00, 0x02, 0x03, 0x01, 0x00, 0x04, 0x01,
@@ -145,10 +156,15 @@ static const u8 led_pink_blue[] = {
 struct ps4_led_node {
 	struct led_classdev cdev;
 	const u8 *payload;
+	bool has_brightness;
+	u8 brightness_offset;
 };
 
 static DEFINE_MUTEX(ps4_led_lock);
 static const u8 *ps4_led_current_payload;
+static u8 ps4_led_current_brightness;
+
+#define PS4_LED_BLUE_BRIGHTNESS_OFFSET 7
 
 /* ============================================================
  * ps4_led_set_blocking - LED class brightness callback
@@ -158,24 +174,39 @@ static const u8 *ps4_led_current_payload;
  *
  * Called by the LED subsystem when user-space writes to a
  * /sys/class/leds/ps4:<color>:status/brightness node.
+ *
+ * For blue LED, brightness value (0-255) is sent directly to hardware.
+ * Other LEDs are on/off only.
  */
 static int ps4_led_set_blocking(struct led_classdev *led_cdev,
 				enum led_brightness value)
 {
 	struct ps4_led_node *node =
 		container_of(led_cdev, struct ps4_led_node, cdev);
-	const u8 *data = value == LED_OFF ? led_off : node->payload;
+	const u8 *data;
 	u8 reply[0x30];
+	u8 payload_copy[PS4_LED_PAYLOAD_LEN];
 	int ret;
-
-	memset(reply, 0, sizeof(reply));
 
 	mutex_lock(&ps4_led_lock);
 
-	if (ps4_led_current_payload == data) {
+	if (value == LED_OFF) {
+		data = led_off;
+	} else if (node->has_brightness) {
+		memcpy(payload_copy, node->payload, PS4_LED_PAYLOAD_LEN);
+		payload_copy[node->brightness_offset] = (u8)value;
+		data = payload_copy;
+	} else {
+		data = node->payload;
+	}
+
+	if (ps4_led_current_payload == node->payload &&
+	    (!node->has_brightness || ps4_led_current_brightness == value)) {
 		mutex_unlock(&ps4_led_lock);
 		return 0;
 	}
+
+	memset(reply, 0, sizeof(reply));
 
 	ret = apcie_icc_cmd(PS4_LED_ICC_MAJOR, PS4_LED_ICC_MINOR,
 			    data, PS4_LED_PAYLOAD_LEN,
@@ -185,7 +216,9 @@ static int ps4_led_set_blocking(struct led_classdev *led_cdev,
 		return ret;
 	}
 
-	ps4_led_current_payload = data;
+	ps4_led_current_payload = node->payload;
+	if (node->has_brightness)
+		ps4_led_current_brightness = value;
 	mutex_unlock(&ps4_led_lock);
 
 	return 0;
@@ -207,11 +240,13 @@ static struct ps4_led_node ps4_led_nodes[] = {
 			.brightness_set_blocking = ps4_led_set_blocking,
 		},
 		.payload = led_blue,
+		.has_brightness = true,
+		.brightness_offset = PS4_LED_BLUE_BRIGHTNESS_OFFSET,
 	},
 	{
 		.cdev = {
 			.name = "ps4:white:status",
-			.max_brightness = 255,
+			.max_brightness = 1,
 			.brightness_set_blocking = ps4_led_set_blocking,
 		},
 		.payload = led_white,
@@ -219,7 +254,7 @@ static struct ps4_led_node ps4_led_nodes[] = {
 	{
 		.cdev = {
 			.name = "ps4:orange:status",
-			.max_brightness = 255,
+			.max_brightness = 1,
 			.brightness_set_blocking = ps4_led_set_blocking,
 		},
 		.payload = led_orange,
@@ -227,7 +262,7 @@ static struct ps4_led_node ps4_led_nodes[] = {
 	{
 		.cdev = {
 			.name = "ps4:orange_blue:status",
-			.max_brightness = 255,
+			.max_brightness = 1,
 			.brightness_set_blocking = ps4_led_set_blocking,
 		},
 		.payload = led_orange_blue,
@@ -235,7 +270,7 @@ static struct ps4_led_node ps4_led_nodes[] = {
 	{
 		.cdev = {
 			.name = "ps4:orange_white:status",
-			.max_brightness = 255,
+			.max_brightness = 1,
 			.brightness_set_blocking = ps4_led_set_blocking,
 		},
 		.payload = led_orange_white,
@@ -243,7 +278,7 @@ static struct ps4_led_node ps4_led_nodes[] = {
 	{
 		.cdev = {
 			.name = "ps4:pulsate_orange:status",
-			.max_brightness = 255,
+			.max_brightness = 1,
 			.brightness_set_blocking = ps4_led_set_blocking,
 		},
 		.payload = led_pulsate_orange,
@@ -251,7 +286,7 @@ static struct ps4_led_node ps4_led_nodes[] = {
 	{
 		.cdev = {
 			.name = "ps4:orange_white_blue:status",
-			.max_brightness = 255,
+			.max_brightness = 1,
 			.brightness_set_blocking = ps4_led_set_blocking,
 		},
 		.payload = led_orange_white_blue,
@@ -259,7 +294,7 @@ static struct ps4_led_node ps4_led_nodes[] = {
 	{
 		.cdev = {
 			.name = "ps4:white_blue:status",
-			.max_brightness = 255,
+			.max_brightness = 1,
 			.brightness_set_blocking = ps4_led_set_blocking,
 		},
 		.payload = led_white_blue,
@@ -267,7 +302,7 @@ static struct ps4_led_node ps4_led_nodes[] = {
 	{
 		.cdev = {
 			.name = "ps4:violet_blue:status",
-			.max_brightness = 255,
+			.max_brightness = 1,
 			.brightness_set_blocking = ps4_led_set_blocking,
 		},
 		.payload = led_violet_blue,
@@ -275,7 +310,7 @@ static struct ps4_led_node ps4_led_nodes[] = {
 	{
 		.cdev = {
 			.name = "ps4:pink:status",
-			.max_brightness = 255,
+			.max_brightness = 1,
 			.brightness_set_blocking = ps4_led_set_blocking,
 		},
 		.payload = led_pink,
@@ -283,7 +318,7 @@ static struct ps4_led_node ps4_led_nodes[] = {
 	{
 		.cdev = {
 			.name = "ps4:pink_blue:status",
-			.max_brightness = 255,
+			.max_brightness = 1,
 			.brightness_set_blocking = ps4_led_set_blocking,
 		},
 		.payload = led_pink_blue,
@@ -308,7 +343,7 @@ static int ps4_led_probe(struct platform_device *pdev)
 		}
 	}
 
-	dev_info(&pdev->dev, "PS4 LED driver ready.\n");
+	dev_info(&pdev->dev, "PS4 LED driver ready (blue LED supports brightness 0-255)\n");
 
 	return 0;
 }

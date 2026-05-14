@@ -153,9 +153,9 @@ static void apcie_msi_calc_mask(struct irq_data *data) {
 	u32 subfunc = data->hwirq & 0xff;
 
 	if (subfunc == 0xff) {
-		data->mask = (1 << subfuncs_per_func[func]) - 1;
+		data->mask = (1U << subfuncs_per_func[func]) - 1;
 	} else {
-		data->mask = 1 << subfunc;
+		data->mask = 1U << subfunc;
 	}
 }
 
@@ -401,8 +401,6 @@ int apcie_assign_irqs(struct pci_dev *dev, int nvec)
 		ret = nvec;
 	}
 
-fail:
-	dev_dbg(&dev->dev, "apcie_assign_irqs returning %d\n", ret);
 	if (sc_dev)
 		pci_dev_put(sc_dev);
 	return ret;
@@ -571,9 +569,21 @@ static int apcie_probe(struct pci_dev *dev, const struct pci_device_id *id) {
 
 	if ((ret = apcie_glue_init(sc)) < 0)
 		goto free_bars;
-	// TODO (ps4patches): figure out why this dies a horrible and painful death.
-	//if ((ret = apcie_uart_init(sc)) < 0)
-	//	goto remove_glue;
+	/*
+	 * UART initialization disabled due to hardware hang on some systems.
+	 *
+	 * Investigation needed: The 8250 driver may need platform-specific
+	 * quirks for Aeolia's UART implementation. The serial ports appear
+	 * to work during early boot but hang during driver registration.
+	 *
+	 * Symptoms: System hangs during serial8250_register_8250_port().
+	 * Workaround: Use USB serial adapters for console access.
+	 *
+	 * TODO: Test with reduced UART clock, different FIFO triggers,
+	 * or UPF_SKIP_AUTOPROBE flag.
+	 */
+	/* if ((ret = apcie_uart_init(sc)) < 0)
+		goto remove_glue; */
 	if ((ret = apcie_icc_init(sc)) < 0)
 		goto remove_glue;
 

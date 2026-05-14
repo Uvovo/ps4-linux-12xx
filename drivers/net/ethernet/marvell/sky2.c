@@ -4694,9 +4694,10 @@ static void aeolia_get_mac_address(struct sky2_hw *hw, unsigned char *addr) {
 		return;
 	}
 
-	bp_base = pci_resource_start(mem_dev, 5) + APCIE_SPM_BP_BASE;
+bp_base = pci_resource_start(mem_dev, 5) + APCIE_SPM_BP_BASE;
 	if (!request_mem_region(bp_base, APCIE_SPM_BP_SIZE, "spm.bp")) {
 		dev_err(&hw->pdev->dev, "sky2: failed to request bootparam SPM region\n");
+		pci_dev_put(mem_dev);
 		return;
 	}
 
@@ -4709,8 +4710,9 @@ static void aeolia_get_mac_address(struct sky2_hw *hw, unsigned char *addr) {
 	memcpy_fromio(addr, bp, ETH_ALEN);
 
 	iounmap(bp);
-release_bp:
-	release_mem_region(bp_base, APCIE_SPM_BP_SIZE);
+ release_bp:
+ 	release_mem_region(bp_base, APCIE_SPM_BP_SIZE);
+	pci_dev_put(mem_dev);
 }
 #endif
 
