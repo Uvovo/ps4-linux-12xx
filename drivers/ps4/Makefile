@@ -9,6 +9,7 @@ obj-y += ps4-apcie.o \
     icc/i2c.o
 obj-y += ps4-led.o
 obj-y += ps4-fan.o
+obj-y += ps4-buzzer.o
 obj-y += ps4-mesa-lock.o
 
 ifneq ($(PS4_MESA_LOCK_TOKEN),)
