@@ -2860,6 +2860,7 @@ static int only_one_child(struct pci_bus *bus)
 /* It can be arbitrary (above 2). FreeBSD uses 20, so use that too. */
 #define AEOLIA_SLOT_NUM 20
 
+/* Internal reference: rmux-0x4e6574 */
 #ifdef CONFIG_X86_PS4
 static bool ps4_skip_phantom_sony_dev(struct pci_bus *bus, unsigned int devfn)
 {
