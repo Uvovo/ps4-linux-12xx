@@ -972,9 +972,24 @@ int ps4_bridge_get_modes(struct drm_connector *connector)
 
 		if (request_firmware(&fw, "edid/my_edid.bin",
 				      connector->dev->dev) == 0 && fw) {
-			DRM_DEBUG_KMS("ps4_bridge_get_modes: using firmware EDID "
-				      "(%zu bytes)\n", fw->size);
-			drm_edid = drm_edid_alloc(fw->data, fw->size);
+			size_t edid_len;
+
+			/*
+			 * Validate firmware EDID size against extension count
+			 * to prevent drm_edid_raw() WARN when the blob is
+			 * shorter than what the header claims.
+			 */
+			edid_len = (fw->size >= EDID_LENGTH) ?
+				(size_t)(((const struct edid *)fw->data)->extensions + 1) * EDID_LENGTH : 0;
+			if (edid_len && edid_len <= fw->size) {
+				DRM_DEBUG_KMS("ps4_bridge_get_modes: using firmware EDID "
+					      "(%zu bytes)\n", edid_len);
+				drm_edid = drm_edid_alloc(fw->data, edid_len);
+			} else {
+				DRM_DEBUG_KMS("ps4_bridge_get_modes: firmware EDID "
+					      "size mismatch (file=%zu, header=%zu)\n",
+					      fw->size, edid_len);
+			}
 			release_firmware(fw);
 		} else {
 			DRM_DEBUG_KMS("ps4_bridge_get_modes: no firmware EDID "
@@ -1049,6 +1064,11 @@ int ps4_bridge_get_modes(struct drm_connector *connector)
 edid_ready:
 	if (drm_edid) {
 		raw_edid = drm_edid_raw(drm_edid);
+		if (!raw_edid) {
+			DRM_DEBUG_KMS("ps4_bridge_get_modes: EDID size/extension mismatch, discarding\n");
+			drm_edid_free(drm_edid);
+			goto fallback_modes;
+		}
 		amdgpu_connector->edid = drm_edid_duplicate(raw_edid);
 		drm_edid_connector_update(connector, drm_edid);
 		count = drm_edid_connector_add_modes(connector);
