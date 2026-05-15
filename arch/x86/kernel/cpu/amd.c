@@ -847,6 +847,16 @@ static void init_amd_jg(struct cpuinfo_x86 *c)
 	 * instruction support via CPUID.
 	 */
 	clear_rdrand_cpuid_bit(c);
+
+	/*
+	 * Family 16h Jaguar parts used in semi-custom designs report an
+	 * OPN string via CPUID rather than a human-readable model name.
+	 * Fixup the model ID for /proc/cpuinfo and userspace tooling.
+	 */
+#ifdef CONFIG_X86_PS4
+	if (c->x86_model <= 0x30)
+		strscpy(c->x86_model_id, "AMD Jaguar");
+#endif
 }
 
 static void init_amd_bd(struct cpuinfo_x86 *c)

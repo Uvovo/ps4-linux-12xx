@@ -1009,6 +1009,10 @@ static int gmc_v7_0_sw_init(struct amdgpu_ip_block *ip_block)
 
 	if (adev->flags & AMD_IS_APU) {
 		adev->gmc.vram_type = AMDGPU_VRAM_TYPE_UNKNOWN;
+		/* PS4 Liverpool/Gladius use unified GDDR5 */
+		if (adev->asic_type == CHIP_LIVERPOOL ||
+		    adev->asic_type == CHIP_GLADIUS)
+			adev->gmc.vram_type = AMDGPU_VRAM_TYPE_GDDR5;
 	} else {
 		u32 tmp = RREG32(mmMC_SEQ_MISC0);
 
