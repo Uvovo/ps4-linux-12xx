@@ -40,25 +40,25 @@ bool __init ps4_dmi_is_ps4(void)
 
 static const char * const ps4_strings[DMI_STRING_MAX] = {
 	[DMI_SYS_VENDOR]         = "Sony Interactive Entertainment",
-	
-	[DMI_PRODUCT_NAME]       = "NeverGonna 4",
-	[DMI_PRODUCT_VERSION]    = "CUH-GIVEYOUUP",
-	[DMI_PRODUCT_SERIAL]     = "MARCANANDDUDES",
-	[DMI_PRODUCT_SKU]        = "sku1489666",
+
+	[DMI_PRODUCT_NAME]       = "PlayStation 4",
+	[DMI_PRODUCT_VERSION]    = "Unknown",
+	[DMI_PRODUCT_SERIAL]     = "",
+	[DMI_PRODUCT_SKU]        = "",
 	[DMI_PRODUCT_FAMILY]     = "PlayStation",
 
 	[DMI_BOARD_ASSET_TAG]    = "",
-	[DMI_BOARD_VENDOR]       = "SCEI",
-	[DMI_BOARD_NAME]         = "Belize",
-	[DMI_BOARD_VERSION]      = "rev1",
-	[DMI_BOARD_SERIAL]       = "PS4HAXSONYCRY0",
+	[DMI_BOARD_VENDOR]       = "Sony Interactive Entertainment",
+	[DMI_BOARD_NAME]         = "PlayStation 4 Mainboard",
+	[DMI_BOARD_VERSION]      = "Unknown",
+	[DMI_BOARD_SERIAL]       = "",
 
-	[DMI_BIOS_VENDOR]        = "SIE",
-	[DMI_BIOS_VERSION]       = "PS4Homebrew",
-	[DMI_BIOS_DATE]          = "21/04/2026",
-	[DMI_BIOS_RELEASE]       = "69.0",
+	[DMI_BIOS_VENDOR]        = "Sony Interactive Entertainment",
+	[DMI_BIOS_VERSION]       = "Unknown",
+	[DMI_BIOS_DATE]          = "",
+	[DMI_BIOS_RELEASE]       = "",
 
-	[DMI_CHASSIS_VENDOR]     = "Sony",
+	[DMI_CHASSIS_VENDOR]     = "Sony Interactive Entertainment",
 	[DMI_CHASSIS_TYPE]       = "3",
 	[DMI_CHASSIS_ASSET_TAG]  = "",
 	[DMI_CHASSIS_SERIAL]     = "",

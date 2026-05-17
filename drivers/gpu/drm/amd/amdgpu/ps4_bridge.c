@@ -40,10 +40,13 @@
 #include <drm/drm_bridge.h>
 #include <drm/drm_encoder.h>
 
+#include <linux/debugfs.h>
 #include <linux/err.h>
 #include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/i2c-algo-bit.h>
+#include <linux/moduleparam.h>
+#include <linux/seq_file.h>
 
 
 #include "amdgpu.h"
@@ -132,6 +135,11 @@
 #define PS4_BRIDGE_BELIZE_ENABLE_ATTEMPTS 3
 #define PS4_BRIDGE_BELIZE_RETRY_DELAY_MS 120
 
+static bool amdgpu_ps4_bridge_poll;
+module_param_named(ps4_bridge_poll, amdgpu_ps4_bridge_poll, bool, 0644);
+MODULE_PARM_DESC(ps4_bridge_poll,
+		 "Enable polling-based hotplug detection for the PS4 bridge");
+
 struct edid *drm_get_edid(struct drm_connector *connector,
  				 struct i2c_adapter *adapter);
 
@@ -158,6 +166,8 @@ struct i2c_cmdqueue {
 
 	u8 *p;
 	struct i2c_cmd_hdr *cmd;
+	bool overflow;
+	u32 overflow_count;
 };
 
 struct ps4_bridge {
@@ -170,6 +180,11 @@ struct ps4_bridge {
 	int mode;
 	bool enabled;
 	bool enabling;
+	u32 last_mode_count;
+	u32 detect_count;
+	int last_dpcd_ret;
+	bool last_detect_force;
+	enum drm_connector_status last_detect_status;
 };
 
 /* this should really be taken care of by the connector, but that is currently
@@ -196,6 +211,7 @@ static int ps4_bridge_read_edid_block(void *data, u8 *buf,
 				       unsigned int block, size_t len);
 static int ps4_bridge_read_edid_block_smbus(void *data, u8 *buf,
 					     unsigned int block, size_t len);
+static int ps4_bridge_status_show(struct seq_file *m, void *unused);
 
 
 static void cq_init(struct i2c_cmdqueue *q, u8 code)
@@ -204,6 +220,21 @@ static void cq_init(struct i2c_cmdqueue *q, u8 code)
 	q->req.count = 0;
 	q->p = q->req.cmdbuf;
 	q->cmd = NULL;
+	q->overflow = false;
+}
+
+static bool cq_reserve(struct i2c_cmdqueue *q, size_t len)
+{
+	if (q->overflow)
+		return false;
+
+	if (q->p + len > q->req.cmdbuf + sizeof(q->req.cmdbuf)) {
+		q->overflow_count++;
+		q->overflow = true;
+		return false;
+	}
+
+	return true;
 }
 
 static int ps4_bridge_read_edid_block(void *data, u8 *buf,
@@ -272,6 +303,9 @@ static int ps4_bridge_read_edid_block_smbus(void *data, u8 *buf,
 static void cq_cmd(struct i2c_cmdqueue *q, u8 major, u8 minor)
 {
 	if (!q->cmd || q->cmd->major != major || q->cmd->minor != minor) {
+		if (!cq_reserve(q, sizeof(*q->cmd)))
+			return;
+
 		if (q->cmd)
 			q->cmd->length = q->p - (u8 *)q->cmd;
 		q->cmd = (struct i2c_cmd_hdr *)q->p;
@@ -289,6 +323,11 @@ static void cq_cmd(struct i2c_cmdqueue *q, u8 major, u8 minor)
 static int cq_exec(struct i2c_cmdqueue *q)
 {
 	int res;
+
+	if (q->overflow) {
+		DRM_ERROR("icc i2c commandqueue overflowed\n");
+		return -ENOSPC;
+	}
 
 	if (!q->cmd)
 		return 0;
@@ -315,6 +354,8 @@ static int cq_exec(struct i2c_cmdqueue *q)
 static void cq_read(struct i2c_cmdqueue *q, u16 addr, u8 count)
 {
 	cq_cmd(q, CMD_READ);
+	if (!cq_reserve(q, 4))
+		return;
 	*q->p++ = count;
 	*q->p++ = addr >> 8;
 	*q->p++ = addr & 0xff;
@@ -324,6 +365,8 @@ static void cq_read(struct i2c_cmdqueue *q, u16 addr, u8 count)
 static void cq_writereg(struct i2c_cmdqueue *q, u16 addr, u8 data)
 {
 	cq_cmd(q, CMD_WRITE);
+	if (!cq_reserve(q, 4))
+		return;
 	*q->p++ = 1;
 	*q->p++ = addr >> 8;
 	*q->p++ = addr & 0xff;
@@ -334,6 +377,8 @@ static void cq_writereg(struct i2c_cmdqueue *q, u16 addr, u8 data)
 static void cq_write(struct i2c_cmdqueue *q, u16 addr, u8 *data, u8 count)
 {
 	cq_cmd(q, CMD_WRITE);
+	if (!cq_reserve(q, 3 + count))
+		return;
 	*q->p++ = count;
 	*q->p++ = addr >> 8;
 	*q->p++ = addr & 0xff;
@@ -345,6 +390,8 @@ static void cq_write(struct i2c_cmdqueue *q, u16 addr, u8 *data, u8 count)
 static void cq_mask(struct i2c_cmdqueue *q, u16 addr, u8 value, u8 mask)
 {
 	cq_cmd(q, CMD_MASK);
+	if (!cq_reserve(q, 5))
+		return;
 	*q->p++ = 1;
 	*q->p++ = addr >> 8;
 	*q->p++ = addr & 0xff;
@@ -356,6 +403,8 @@ static void cq_mask(struct i2c_cmdqueue *q, u16 addr, u8 value, u8 mask)
 static void cq_delay(struct i2c_cmdqueue *q, u16 time)
 {
 	cq_cmd(q, CMD_DELAY);
+	if (!cq_reserve(q, 4))
+		return;
 	*q->p++ = 0;
 	*q->p++ = time & 0xff;
 	*q->p++ = time>>8;
@@ -366,6 +415,8 @@ static void cq_delay(struct i2c_cmdqueue *q, u16 time)
 static void cq_wait_set(struct i2c_cmdqueue *q, u16 addr, u8 mask)
 {
 	cq_cmd(q, CMD_WAIT_SET);
+	if (!cq_reserve(q, 4))
+		return;
 	*q->p++ = 0;
 	*q->p++ = addr >> 8;
 	*q->p++ = addr & 0xff;
@@ -375,6 +426,8 @@ static void cq_wait_set(struct i2c_cmdqueue *q, u16 addr, u8 mask)
 static void cq_wait_clear(struct i2c_cmdqueue *q, u16 addr, u8 mask)
 {
 	cq_cmd(q, CMD_WAIT_CLEAR);
+	if (!cq_reserve(q, 4))
+		return;
 	*q->p++ = 0;
 	*q->p++ = addr >> 8;
 	*q->p++ = addr & 0xff;
@@ -385,6 +438,87 @@ static inline struct ps4_bridge *
 		bridge_to_ps4_bridge(struct drm_bridge *bridge)
 {
 	return container_of(bridge, struct ps4_bridge, bridge);
+}
+
+static const char *ps4_bridge_detect_status_name(enum drm_connector_status status)
+{
+	switch (status) {
+	case connector_status_connected:
+		return "connected";
+	case connector_status_disconnected:
+		return "disconnected";
+	default:
+		return "unknown";
+	}
+}
+
+static void ps4_bridge_record_detect(struct ps4_bridge *mn_bridge, bool force,
+					    int dpcd_ret,
+					    enum drm_connector_status status)
+{
+	mutex_lock(&mn_bridge->mutex);
+	mn_bridge->detect_count++;
+	mn_bridge->last_detect_force = force;
+	mn_bridge->last_dpcd_ret = dpcd_ret;
+	mn_bridge->last_detect_status = status;
+	mutex_unlock(&mn_bridge->mutex);
+}
+
+static int ps4_bridge_status_show(struct seq_file *m, void *unused)
+{
+	struct ps4_bridge *mn_bridge = m->private;
+	struct drm_connector *connector = mn_bridge->connector;
+	struct amdgpu_connector *amdgpu_connector;
+	struct amdgpu_connector_atom_dig *dig_connector;
+
+	if (!connector)
+		return 0;
+
+	amdgpu_connector = to_amdgpu_connector(connector);
+	dig_connector = amdgpu_connector->con_priv;
+
+	seq_printf(m, "poll_enabled: %u\n", amdgpu_ps4_bridge_poll);
+	seq_printf(m, "connector_status: %s\n",
+		   ps4_bridge_detect_status_name(connector->status));
+	seq_printf(m, "bridge_enabled: %u\n", mn_bridge->enabled);
+	seq_printf(m, "bridge_enabling: %u\n", mn_bridge->enabling);
+	seq_printf(m, "last_mode_vic: %d\n", mn_bridge->mode);
+	seq_printf(m, "last_mode_count: %u\n", mn_bridge->last_mode_count);
+	seq_printf(m, "detect_count: %u\n", mn_bridge->detect_count);
+	seq_printf(m, "last_detect_force: %u\n", mn_bridge->last_detect_force);
+	seq_printf(m, "last_detect_status: %s\n",
+		   ps4_bridge_detect_status_name(mn_bridge->last_detect_status));
+	seq_printf(m, "last_dpcd_ret: %d\n", mn_bridge->last_dpcd_ret);
+	seq_printf(m, "has_aux: %u\n",
+		   amdgpu_connector->ddc_bus &&
+		   amdgpu_connector->ddc_bus->has_aux);
+	seq_printf(m, "has_edid: %u\n", amdgpu_connector->edid != NULL);
+	seq_printf(m, "connector_polled: %#x\n", connector->polled);
+	seq_printf(m, "dp_lane_count: %d\n",
+		   dig_connector ? dig_connector->dp_lane_count : 0);
+	seq_printf(m, "dp_clock: %d\n",
+		   dig_connector ? dig_connector->dp_clock : 0);
+	seq_printf(m, "cq_overflow_count: %u\n", mn_bridge->cq.overflow_count);
+
+	return 0;
+}
+
+DEFINE_SHOW_ATTRIBUTE(ps4_bridge_status);
+
+static void ps4_bridge_debugfs_init(struct ps4_bridge *mn_bridge)
+{
+	struct drm_device *dev = mn_bridge->connector->dev;
+	struct dentry *root;
+
+	if (!dev->primary)
+		return;
+
+	root = dev->primary->debugfs_root;
+	if (!root)
+		return;
+
+	debugfs_create_file("ps4_bridge_status", 0444, root, mn_bridge,
+			    &ps4_bridge_status_fops);
 }
 
 static void ps4_bridge_clear_global(void *data)
@@ -808,11 +942,6 @@ static void ps4_bridge_enable(struct drm_bridge *bridge)
 	else
 	{
 		/* Panasonic MN864729 */
-		/*
-		 * A successful video programming pass only means the bridge
-		 * command queue completed. The retrain helper returns void, so
-		 * retry the bounded Belize attempts unconditionally here.
-		 */
 		for (attempt = 1; attempt <= PS4_BRIDGE_BELIZE_ENABLE_ATTEMPTS;
 		     attempt++) {
 			DRM_DEBUG_KMS("ps4_bridge_enable: Belize attempt %u/%u\n",
@@ -828,9 +957,7 @@ static void ps4_bridge_enable(struct drm_bridge *bridge)
 
 			success = true;
 			ps4_bridge_retrain_dp(mn_bridge);
-
-			if (attempt < PS4_BRIDGE_BELIZE_ENABLE_ATTEMPTS)
-				msleep(PS4_BRIDGE_BELIZE_RETRY_DELAY_MS);
+			break;
 		}
 
 		if (success)
@@ -946,6 +1073,7 @@ static const struct drm_display_mode mode_1080p120 __maybe_unused = {
 int ps4_bridge_get_modes(struct drm_connector *connector)
 {
 	struct drm_device *dev = connector->dev;
+	struct ps4_bridge *mn_bridge = g_bridge;
 	struct amdgpu_connector *amdgpu_connector = to_amdgpu_connector(connector);
 	struct amdgpu_connector_atom_dig *dig_connector = amdgpu_connector->con_priv;
 	struct drm_encoder *encoder;
@@ -1036,6 +1164,8 @@ int ps4_bridge_get_modes(struct drm_connector *connector)
 		DRM_DEBUG_KMS("ps4_bridge_get_modes: EDID ok, %d modes, extensions=%u\n",
 			      count, raw_edid ? raw_edid->extensions : 0);
 		drm_edid_free(drm_edid);
+		if (mn_bridge)
+			mn_bridge->last_mode_count = count;
 		return count;
 	}
 
@@ -1054,10 +1184,14 @@ fallback_modes:
 		count++;
 	}
 
-	//newmode = drm_mode_duplicate(dev, &mode_720p);
-	//drm_mode_probed_add(connector, newmode);
-	//newmode = drm_mode_duplicate(dev, &mode_480p);
-	//drm_mode_probed_add(connector, newmode);
+	newmode = drm_mode_duplicate(dev, &mode_480p);
+	if (newmode) {
+		drm_mode_probed_add(connector, newmode);
+		count++;
+	}
+
+	if (mn_bridge)
+		mn_bridge->last_mode_count = count;
 
 	return count;
 }
@@ -1069,6 +1203,7 @@ enum drm_connector_status ps4_bridge_detect(struct drm_connector *connector,
 	struct amdgpu_connector *amdgpu_connector = to_amdgpu_connector(connector);
 	struct amdgpu_connector_atom_dig *dig_connector = amdgpu_connector->con_priv;
 	int dpcd_ret = -ENODEV;
+	enum drm_connector_status status;
 
 	if (!mn_bridge)
 		return connector_status_disconnected;
@@ -1078,7 +1213,7 @@ enum drm_connector_status ps4_bridge_detect(struct drm_connector *connector,
 	 * sysfs status attribute. Keep background detect calls cheap and only
 	 * touch the bridge on explicit reprobes.
 	 */
-	if (!force)
+	if (!force && !amdgpu_ps4_bridge_poll)
 		return connector->status;
 
 	if (dig_connector)
@@ -1100,7 +1235,8 @@ enum drm_connector_status ps4_bridge_detect(struct drm_connector *connector,
 
 	if (!amdgpu_connector->ddc_bus || !amdgpu_connector->ddc_bus->has_aux) {
 		DRM_DEBUG_KMS("ps4_bridge_detect: No DDC bus or AUX, returning connected\n");
-		return connector_status_connected;
+		status = connector_status_connected;
+		goto out;
 	}
 
 	/* Add more detailed logging for DPCD return values */
@@ -1108,8 +1244,11 @@ enum drm_connector_status ps4_bridge_detect(struct drm_connector *connector,
 		      dpcd_ret,
 		      dpcd_ret == 0 ? "connected" : "disconnected");
 
-	return dpcd_ret == 0 ? connector_status_connected :
-	       connector_status_disconnected;
+	status = dpcd_ret == 0 ? connector_status_connected :
+		 connector_status_disconnected;
+out:
+	ps4_bridge_record_detect(mn_bridge, force, dpcd_ret, status);
+	return status;
 }
 
 enum drm_mode_status ps4_bridge_mode_valid(struct drm_connector *connector,
@@ -1118,7 +1257,7 @@ enum drm_mode_status ps4_bridge_mode_valid(struct drm_connector *connector,
 	int vic = drm_match_cea_mode(mode);
 
 	/* Keep 60 Hz defaults conservative without forbidding valid 120 Hz VICs. */
-	if (!vic || (vic != 16 && vic != 4 && vic != 63)) {
+	if (!vic || (vic != 16 && vic != 4 && vic != 1 && vic != 63)) {
 		return MODE_BAD;
 	}
 	return MODE_OK;
@@ -1171,11 +1310,14 @@ int ps4_bridge_register(struct drm_connector *connector,
 	mn_bridge->encoder = encoder;
 	mn_bridge->connector = connector;
 	mn_bridge->bridge.type = DRM_MODE_CONNECTOR_HDMIA;
+	connector->polled = amdgpu_ps4_bridge_poll ?
+			    DRM_CONNECTOR_POLL_CONNECT |
+			    DRM_CONNECTOR_POLL_DISCONNECT : 0;
 
 	/*
-	 * Leave connector polling disabled. Userspace can force a reprobe
-	 * through the standard DRM connector sysfs status attribute without
-	 * paying periodic bridge detect overhead on Aeolia.
+	 * Aeolia does not provide reliable HPD interrupts. Keep polling
+	 * disabled by default, but allow it to be re-enabled for debugging
+	 * or hotplug experiments with amdgpu.ps4_bridge_poll=1.
 	 */
 
 	ret = devm_drm_bridge_add(dev, &mn_bridge->bridge);
@@ -1189,6 +1331,7 @@ int ps4_bridge_register(struct drm_connector *connector,
 	}
 
 	g_bridge = mn_bridge;
+	ps4_bridge_debugfs_init(mn_bridge);
 
 	return 0;
 }

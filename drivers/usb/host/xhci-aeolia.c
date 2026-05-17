@@ -12,6 +12,7 @@
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/acpi.h>
+#include <linux/mutex.h>
 #include <asm/ps4.h>
 #include "xhci-aeolia.h"
 #include "../../ps4/aeolia.h"
@@ -159,6 +160,7 @@ static struct scsi_host_template ahci_sht = {
 	AHCI_SHT(DRV_NAME),
 };
 
+static DEFINE_MUTEX(bus_master_lock);
 static bool bus_master;
 static int ahci_init_one(struct pci_dev *pdev)
 {
@@ -314,10 +316,12 @@ static int ahci_init_one(struct pci_dev *pdev)
 	ahci_init_controller(host);
 	ahci_print_info(host, "ATA");
 
+	mutex_lock(&bus_master_lock);
 	if (!bus_master) {
 		pci_set_master(pdev);
 		bus_master = true;
 	}
+	mutex_unlock(&bus_master_lock);
 
 	rc = ahci_host_activate(host, &ahci_sht);
 	dev_dbg(&pdev->dev, "ahci_host_activate returned %d\n", rc);
@@ -394,11 +398,14 @@ static int xhci_aeolia_probe(struct pci_dev *dev, const struct pci_device_id *id
 	if(dev->device == PCI_DEVICE_ID_SONY_BELIZE_XHCI) {
 		retval = ahci_init_one(dev);
 		dev_dbg(&dev->dev, "ahci_init_one returned %d", retval);
-		if (!retval)
+		if (!retval) {
 			ahci_started = true;
-		if (!bus_master) {
-			pci_set_master(dev);
-			bus_master = true;
+			mutex_lock(&bus_master_lock);
+			if (!bus_master) {
+				pci_set_master(dev);
+				bus_master = true;
+			}
+			mutex_unlock(&bus_master_lock);
 		}
 	}
 
@@ -479,9 +486,15 @@ static void xhci_hcd_pci_shutdown(struct pci_dev *dev){
 				if (hcd) {
 					if (test_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags) && hcd->driver->shutdown) {
 						hcd->driver->shutdown(hcd);
-						if (usb_hcd_is_primary_hcd(hcd) && hcd->irq > 0)
-							free_irq(hcd->irq, hcd);
 					}
+				}
+			}
+		}
+		else {
+			hcd = axhci->hcd[idx];
+			if (hcd) {
+				if (test_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags) && hcd->driver->shutdown) {
+					hcd->driver->shutdown(hcd);
 				}
 			}
 		}

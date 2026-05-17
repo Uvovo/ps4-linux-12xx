@@ -23,7 +23,10 @@
 #include <drm/drm_edid.h>
 #include <drm/drm_probe_helper.h>
 
+#include <linux/debugfs.h>
+#include <linux/moduleparam.h>
 #include <linux/pci.h>
+#include <linux/seq_file.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_encoder.h>
 
@@ -113,6 +116,11 @@
 #define PCI_DEVICE_ID_CUH_2XXX 0x9923
 #define PCI_DEVICE_ID_CUH_7XXX 0x9924
 
+static bool radeon_ps4_bridge_poll = true;
+module_param_named(ps4_bridge_poll, radeon_ps4_bridge_poll, bool, 0644);
+MODULE_PARM_DESC(ps4_bridge_poll,
+		 "Enable polling-based hotplug detection for the PS4 bridge");
+
 struct edid *drm_get_edid(struct drm_connector *connector,
  				 struct i2c_adapter *adapter);
 
@@ -139,6 +147,8 @@ struct i2c_cmdqueue {
 
 	u8 *p;
 	struct i2c_cmd_hdr *cmd;
+	bool overflow;
+	u32 overflow_count;
 };
 
 struct radeon_ps4_bridge {
@@ -149,6 +159,12 @@ struct radeon_ps4_bridge {
 	struct mutex mutex;
 
 	int mode;
+	u32 last_mode_count;
+	u32 detect_count;
+	u8 last_tmonreg;
+	bool last_dpcd_ok;
+	bool last_detect_force;
+	enum drm_connector_status last_detect_status;
 };
 
 /* this should really be taken care of by the connector, but that is currently
@@ -163,11 +179,29 @@ static void cq_init(struct i2c_cmdqueue *q, u8 code)
 	q->req.count = 0;
 	q->p = q->req.cmdbuf;
 	q->cmd = NULL;
+	q->overflow = false;
+}
+
+static bool cq_reserve(struct i2c_cmdqueue *q, size_t len)
+{
+	if (q->overflow)
+		return false;
+
+	if (q->p + len > q->req.cmdbuf + sizeof(q->req.cmdbuf)) {
+		q->overflow_count++;
+		q->overflow = true;
+		return false;
+	}
+
+	return true;
 }
 
 static void cq_cmd(struct i2c_cmdqueue *q, u8 major, u8 minor)
 {
 	if (!q->cmd || q->cmd->major != major || q->cmd->minor != minor) {
+		if (!cq_reserve(q, sizeof(*q->cmd)))
+			return;
+
 		if (q->cmd)
 			q->cmd->length = q->p - (u8 *)q->cmd;
 		q->cmd = (struct i2c_cmd_hdr *)q->p;
@@ -185,6 +219,11 @@ static void cq_cmd(struct i2c_cmdqueue *q, u8 major, u8 minor)
 static int cq_exec(struct i2c_cmdqueue *q)
 {
 	int res;
+
+	if (q->overflow) {
+		DRM_ERROR("icc i2c commandqueue overflowed\n");
+		return -ENOSPC;
+	}
 
 	if (!q->cmd)
 		return 0;
@@ -211,6 +250,8 @@ static int cq_exec(struct i2c_cmdqueue *q)
 static void cq_read(struct i2c_cmdqueue *q, u16 addr, u8 count)
 {
 	cq_cmd(q, CMD_READ);
+	if (!cq_reserve(q, 4))
+		return;
 	*q->p++ = count;
 	*q->p++ = addr >> 8;
 	*q->p++ = addr & 0xff;
@@ -220,6 +261,8 @@ static void cq_read(struct i2c_cmdqueue *q, u16 addr, u8 count)
 static void cq_writereg(struct i2c_cmdqueue *q, u16 addr, u8 data)
 {
 	cq_cmd(q, CMD_WRITE);
+	if (!cq_reserve(q, 4))
+		return;
 	*q->p++ = 1;
 	*q->p++ = addr >> 8;
 	*q->p++ = addr & 0xff;
@@ -241,6 +284,8 @@ static void cq_write(struct i2c_cmdqueue *q, u16 addr, u8 *data, u8 count)
 static void cq_mask(struct i2c_cmdqueue *q, u16 addr, u8 value, u8 mask)
 {
 	cq_cmd(q, CMD_MASK);
+	if (!cq_reserve(q, 5))
+		return;
 	*q->p++ = 1;
 	*q->p++ = addr >> 8;
 	*q->p++ = addr & 0xff;
@@ -252,6 +297,8 @@ static void cq_mask(struct i2c_cmdqueue *q, u16 addr, u8 value, u8 mask)
 static void cq_delay(struct i2c_cmdqueue *q, u16 time)
 {
 	cq_cmd(q, CMD_DELAY);
+	if (!cq_reserve(q, 4))
+		return;
 	*q->p++ = 0;
 	*q->p++ = time & 0xff;
 	*q->p++ = time>>8;
@@ -262,6 +309,8 @@ static void cq_delay(struct i2c_cmdqueue *q, u16 time)
 static void cq_wait_set(struct i2c_cmdqueue *q, u16 addr, u8 mask)
 {
 	cq_cmd(q, CMD_WAIT_SET);
+	if (!cq_reserve(q, 4))
+		return;
 	*q->p++ = 0;
 	*q->p++ = addr >> 8;
 	*q->p++ = addr & 0xff;
@@ -271,6 +320,8 @@ static void cq_wait_set(struct i2c_cmdqueue *q, u16 addr, u8 mask)
 static void cq_wait_clear(struct i2c_cmdqueue *q, u16 addr, u8 mask)
 {
 	cq_cmd(q, CMD_WAIT_CLEAR);
+	if (!cq_reserve(q, 4))
+		return;
 	*q->p++ = 0;
 	*q->p++ = addr >> 8;
 	*q->p++ = addr & 0xff;
@@ -281,6 +332,74 @@ static inline struct radeon_ps4_bridge *
 		bridge_to_radeon_ps4_bridge(struct drm_bridge *bridge)
 {
 	return container_of(bridge, struct radeon_ps4_bridge, bridge);
+}
+
+static const char *radeon_ps4_bridge_detect_status_name(enum drm_connector_status status)
+{
+	switch (status) {
+	case connector_status_connected:
+		return "connected";
+	case connector_status_disconnected:
+		return "disconnected";
+	default:
+		return "unknown";
+	}
+}
+
+static int radeon_ps4_bridge_status_show(struct seq_file *m, void *unused)
+{
+	struct radeon_ps4_bridge *mn_bridge = m->private;
+	struct drm_connector *connector = mn_bridge->connector;
+	struct radeon_connector *radeon_connector;
+	struct radeon_connector_atom_dig *dig_connector;
+
+	if (!connector)
+		return 0;
+
+	radeon_connector = to_radeon_connector(connector);
+	dig_connector = radeon_connector->con_priv;
+
+	seq_printf(m, "poll_enabled: %u\n", radeon_ps4_bridge_poll);
+	seq_printf(m, "connector_status: %s\n",
+		   radeon_ps4_bridge_detect_status_name(connector->status));
+	seq_printf(m, "last_mode_vic: %d\n", mn_bridge->mode);
+	seq_printf(m, "last_mode_count: %u\n", mn_bridge->last_mode_count);
+	seq_printf(m, "detect_count: %u\n", mn_bridge->detect_count);
+	seq_printf(m, "last_detect_force: %u\n", mn_bridge->last_detect_force);
+	seq_printf(m, "last_detect_status: %s\n",
+		   radeon_ps4_bridge_detect_status_name(mn_bridge->last_detect_status));
+	seq_printf(m, "last_tmonreg: %#x\n", mn_bridge->last_tmonreg);
+	seq_printf(m, "last_dpcd_ok: %u\n", mn_bridge->last_dpcd_ok);
+	seq_printf(m, "has_aux: %u\n",
+		   radeon_connector->ddc_bus &&
+		   radeon_connector->ddc_bus->has_aux);
+	seq_printf(m, "has_edid: %u\n", radeon_connector->edid != NULL);
+	seq_printf(m, "connector_polled: %#x\n", connector->polled);
+	seq_printf(m, "dp_lane_count: %d\n",
+		   dig_connector ? dig_connector->dp_lane_count : 0);
+	seq_printf(m, "dp_clock: %d\n",
+		   dig_connector ? dig_connector->dp_clock : 0);
+	seq_printf(m, "cq_overflow_count: %u\n", mn_bridge->cq.overflow_count);
+
+	return 0;
+}
+
+DEFINE_SHOW_ATTRIBUTE(radeon_ps4_bridge_status);
+
+static void radeon_ps4_bridge_debugfs_init(struct radeon_ps4_bridge *mn_bridge)
+{
+	struct drm_device *dev = mn_bridge->connector->dev;
+	struct dentry *root;
+
+	if (!dev->primary)
+		return;
+
+	root = dev->primary->debugfs_root;
+	if (!root)
+		return;
+
+	debugfs_create_file("radeon_ps4_bridge_status", 0444, root, mn_bridge,
+			    &radeon_ps4_bridge_status_fops);
 }
 
 void radeon_ps4_bridge_mode_set(struct drm_bridge *bridge,
@@ -356,7 +475,7 @@ static void radeon_ps4_bridge_pre_enable(struct drm_bridge *bridge)
 	/* Reset HDCP */
 	cq_writereg(&mn_bridge->cq, TSRST, TSRST_ENCSRST | TSRST_HDCPSRST);
 	/* Disable HDCP flag */
-	cq_writereg(&mn_bridge->cq, TSRST, HDCPEN_ENC_DIS);
+	cq_writereg(&mn_bridge->cq, HDCPEN, HDCPEN_ENC_DIS);
 	/* HDCP AKE reset */
 	cq_writereg(&mn_bridge->cq, AKESRST, 0xff);
 	/* Wait AKE busy */
@@ -677,20 +796,79 @@ static const struct drm_display_mode mode_1080p = {
 int radeon_ps4_bridge_get_modes(struct drm_connector *connector)
 {
 	struct drm_device *dev = connector->dev;
+	struct radeon_ps4_bridge *mn_bridge = &g_bridge;
+	struct radeon_connector *radeon_connector = to_radeon_connector(connector);
+	struct radeon_connector_atom_dig *radeon_dig_connector = radeon_connector->con_priv;
 	struct drm_display_mode *newmode;
+	int dpcd_ok = 0;
+	int count = 0;
 	pr_info("radeon_ps4_bridge_get_modes\n");
 
-	newmode = drm_mode_duplicate(dev, &mode_1080p);
-	drm_mode_probed_add(connector, newmode);
-
-	//newmode = drm_mode_duplicate(dev, &mode_720p);
-	//drm_mode_probed_add(connector, newmode);
-	//newmode = drm_mode_duplicate(dev, &mode_480p);
-	//drm_mode_probed_add(connector, newmode);
-
+	kfree(radeon_connector->edid);
+	radeon_connector->edid = NULL;
 	drm_connector_update_edid_property(connector, NULL);
 
-	return 0;
+	if (!radeon_connector->ddc_bus)
+		goto fallback_modes;
+
+	if (radeon_connector->router.ddc_valid)
+		radeon_router_select_ddc_port(radeon_connector);
+
+	if (radeon_dig_connector)
+		radeon_dig_connector->dp_sink_type = CONNECTOR_OBJECT_ID_DISPLAYPORT;
+
+	if (radeon_connector->ddc_bus->has_aux)
+		dpcd_ok = radeon_dp_getdpcd(radeon_connector);
+
+	if (radeon_connector->ddc_bus->has_aux)
+		radeon_connector->edid = drm_get_edid(connector,
+						      &radeon_connector->ddc_bus->aux.ddc);
+
+	if (!radeon_connector->edid)
+		radeon_connector->edid = drm_get_edid(connector,
+						      &radeon_connector->ddc_bus->adapter);
+
+	if (radeon_connector->edid) {
+		drm_connector_update_edid_property(connector, radeon_connector->edid);
+		count = drm_add_edid_modes(connector, radeon_connector->edid);
+
+		/* Keep a guaranteed sane 1080p mode even when EDID is incomplete. */
+		newmode = drm_mode_duplicate(dev, &mode_1080p);
+		if (newmode) {
+			drm_mode_probed_add(connector, newmode);
+			count++;
+		}
+
+		mn_bridge->last_mode_count = count;
+		DRM_DEBUG_KMS("radeon_ps4_bridge_get_modes: EDID ok, %d modes, dpcd_ok=%d\n",
+			      count, dpcd_ok);
+		return count;
+	}
+
+fallback_modes:
+	newmode = drm_mode_duplicate(dev, &mode_1080p);
+	if (!newmode)
+		return 0;
+
+	drm_mode_probed_add(connector, newmode);
+	count++;
+
+	newmode = drm_mode_duplicate(dev, &mode_720p);
+	if (newmode) {
+		drm_mode_probed_add(connector, newmode);
+		count++;
+	}
+
+	newmode = drm_mode_duplicate(dev, &mode_480p);
+	if (newmode) {
+		drm_mode_probed_add(connector, newmode);
+		count++;
+	}
+
+	drm_connector_update_edid_property(connector, NULL);
+	mn_bridge->last_mode_count = count;
+
+	return count;
 }
 
 enum drm_connector_status radeon_ps4_bridge_detect(struct drm_connector *connector,
@@ -698,12 +876,17 @@ enum drm_connector_status radeon_ps4_bridge_detect(struct drm_connector *connect
 {
 	struct radeon_ps4_bridge *mn_bridge = &g_bridge;
 	u8 reg;
+	enum drm_connector_status status;
+	int dpcd_ret;
 
 	struct radeon_connector *radeon_connector = to_radeon_connector(connector);
 	struct radeon_connector_atom_dig *radeon_dig_connector = radeon_connector->con_priv;
 
 	radeon_dig_connector->dp_sink_type = CONNECTOR_OBJECT_ID_DISPLAYPORT;
-	int dpcd_ret = radeon_dp_getdpcd(radeon_connector);
+	if (!force && !radeon_ps4_bridge_poll)
+		return connector->status;
+
+	dpcd_ret = radeon_dp_getdpcd(radeon_connector);
 
 	mutex_lock(&mn_bridge->mutex);
 	cq_init(&mn_bridge->cq, 4);
@@ -726,9 +909,17 @@ enum drm_connector_status radeon_ps4_bridge_detect(struct drm_connector *connect
 	 * so it is a reliable live signal unlike the latched HPD bit.
 	 */
 	if ((reg & TMONREG_HPD) && dpcd_ret == 0)
-		return connector_status_connected;
+		status = connector_status_connected;
 	else
-		return connector_status_disconnected;
+		status = connector_status_disconnected;
+
+	mn_bridge->detect_count++;
+	mn_bridge->last_detect_force = force;
+	mn_bridge->last_tmonreg = reg;
+	mn_bridge->last_dpcd_ok = dpcd_ret == 0;
+	mn_bridge->last_detect_status = status;
+
+	return status;
 }
 
 int radeon_ps4_bridge_mode_valid(struct drm_connector *connector,
@@ -737,7 +928,7 @@ int radeon_ps4_bridge_mode_valid(struct drm_connector *connector,
 	int vic = drm_match_cea_mode(mode);
 
 	/* Allow anything that we can match up to a VIC (CEA modes) */
-	if (!vic || (vic != 16 && vic != 4)) {
+	if (!vic || (vic != 16 && vic != 4 && vic != 1)) {
 		return MODE_BAD;
 	}
 
@@ -774,12 +965,13 @@ int radeon_ps4_bridge_register(struct drm_connector *connector,
 	mn_bridge->bridge.funcs = &radeon_ps4_bridge_funcs;
 
 	/*
-	 * Enable DRM connection polling. Without HPD interrupts from Aeolia,
-	 * polling is the only way the kernel will call detect() automatically
-	 * and trigger a modeset when the cable is replugged.
+	 * Aeolia does not provide reliable HPD interrupts. Leave polling
+	 * configurable so users can trade hotplug responsiveness for lower
+	 * background probe traffic.
 	 */
-	connector->polled = DRM_CONNECTOR_POLL_CONNECT |
-			    DRM_CONNECTOR_POLL_DISCONNECT;
+	connector->polled = radeon_ps4_bridge_poll ?
+			    DRM_CONNECTOR_POLL_CONNECT |
+			    DRM_CONNECTOR_POLL_DISCONNECT : 0;
 
 	drm_bridge_add(&mn_bridge->bridge);
 
@@ -788,6 +980,8 @@ int radeon_ps4_bridge_register(struct drm_connector *connector,
 		DRM_ERROR("Failed to initialize bridge with drm\n");
 		return -EINVAL;
 	}
+
+	radeon_ps4_bridge_debugfs_init(mn_bridge);
 
 	return 0;
 }
