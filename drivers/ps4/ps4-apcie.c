@@ -401,6 +401,7 @@ int apcie_assign_irqs(struct pci_dev *dev, int nvec)
 		ret = nvec;
 	}
 
+fail:
 	if (sc_dev)
 		pci_dev_put(sc_dev);
 	return ret;
