@@ -359,22 +359,23 @@ static int radeon_ps4_bridge_status_show(struct seq_file *m, void *unused)
 	radeon_connector = to_radeon_connector(connector);
 	dig_connector = radeon_connector->con_priv;
 
-	seq_printf(m, "poll_enabled: %u\n", radeon_ps4_bridge_poll);
+	seq_printf(m, "poll_enabled: %d\n", (int)radeon_ps4_bridge_poll);
 	seq_printf(m, "connector_status: %s\n",
 		   radeon_ps4_bridge_detect_status_name(connector->status));
 	seq_printf(m, "last_mode_vic: %d\n", mn_bridge->mode);
 	seq_printf(m, "last_mode_count: %u\n", mn_bridge->last_mode_count);
 	seq_printf(m, "detect_count: %u\n", mn_bridge->detect_count);
-	seq_printf(m, "last_detect_force: %u\n", mn_bridge->last_detect_force);
+	seq_printf(m, "last_detect_force: %d\n",
+		   (int)mn_bridge->last_detect_force);
 	seq_printf(m, "last_detect_status: %s\n",
 		   radeon_ps4_bridge_detect_status_name(mn_bridge->last_detect_status));
-	seq_printf(m, "last_tmonreg: %#x\n", mn_bridge->last_tmonreg);
-	seq_printf(m, "last_dpcd_ok: %u\n", mn_bridge->last_dpcd_ok);
-	seq_printf(m, "has_aux: %u\n",
-		   radeon_connector->ddc_bus &&
-		   radeon_connector->ddc_bus->has_aux);
-	seq_printf(m, "has_edid: %u\n", radeon_connector->edid != NULL);
-	seq_printf(m, "connector_polled: %#x\n", connector->polled);
+	seq_printf(m, "last_tmonreg: %#x\n", (unsigned int)mn_bridge->last_tmonreg);
+	seq_printf(m, "last_dpcd_ok: %d\n", (int)mn_bridge->last_dpcd_ok);
+	seq_printf(m, "has_aux: %d\n",
+		   (int)(radeon_connector->ddc_bus &&
+			 radeon_connector->ddc_bus->has_aux));
+	seq_printf(m, "has_edid: %d\n", (int)(radeon_connector->edid != NULL));
+	seq_printf(m, "connector_polled: %#x\n", (unsigned int)connector->polled);
 	seq_printf(m, "dp_lane_count: %d\n",
 		   dig_connector ? dig_connector->dp_lane_count : 0);
 	seq_printf(m, "dp_clock: %d\n",
@@ -936,6 +937,7 @@ int radeon_ps4_bridge_mode_valid(struct drm_connector *connector,
 }
 
 static int radeon_ps4_bridge_attach(struct drm_bridge *bridge,
+				    struct drm_encoder *encoder,
 				    enum drm_bridge_attach_flags flags)
 {
 	/* struct radeon_ps4_bridge *mn_bridge = bridge_to_radeon_ps4_bridge(bridge); */

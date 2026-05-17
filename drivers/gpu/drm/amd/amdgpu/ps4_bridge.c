@@ -477,23 +477,24 @@ static int ps4_bridge_status_show(struct seq_file *m, void *unused)
 	amdgpu_connector = to_amdgpu_connector(connector);
 	dig_connector = amdgpu_connector->con_priv;
 
-	seq_printf(m, "poll_enabled: %u\n", amdgpu_ps4_bridge_poll);
+	seq_printf(m, "poll_enabled: %d\n", (int)amdgpu_ps4_bridge_poll);
 	seq_printf(m, "connector_status: %s\n",
 		   ps4_bridge_detect_status_name(connector->status));
-	seq_printf(m, "bridge_enabled: %u\n", mn_bridge->enabled);
-	seq_printf(m, "bridge_enabling: %u\n", mn_bridge->enabling);
+	seq_printf(m, "bridge_enabled: %d\n", (int)mn_bridge->enabled);
+	seq_printf(m, "bridge_enabling: %d\n", (int)mn_bridge->enabling);
 	seq_printf(m, "last_mode_vic: %d\n", mn_bridge->mode);
 	seq_printf(m, "last_mode_count: %u\n", mn_bridge->last_mode_count);
 	seq_printf(m, "detect_count: %u\n", mn_bridge->detect_count);
-	seq_printf(m, "last_detect_force: %u\n", mn_bridge->last_detect_force);
+	seq_printf(m, "last_detect_force: %d\n",
+		   (int)mn_bridge->last_detect_force);
 	seq_printf(m, "last_detect_status: %s\n",
 		   ps4_bridge_detect_status_name(mn_bridge->last_detect_status));
 	seq_printf(m, "last_dpcd_ret: %d\n", mn_bridge->last_dpcd_ret);
-	seq_printf(m, "has_aux: %u\n",
-		   amdgpu_connector->ddc_bus &&
-		   amdgpu_connector->ddc_bus->has_aux);
-	seq_printf(m, "has_edid: %u\n", amdgpu_connector->edid != NULL);
-	seq_printf(m, "connector_polled: %#x\n", connector->polled);
+	seq_printf(m, "has_aux: %d\n",
+		   (int)(amdgpu_connector->ddc_bus &&
+			 amdgpu_connector->ddc_bus->has_aux));
+	seq_printf(m, "has_edid: %d\n", (int)(amdgpu_connector->edid != NULL));
+	seq_printf(m, "connector_polled: %#x\n", (unsigned int)connector->polled);
 	seq_printf(m, "dp_lane_count: %d\n",
 		   dig_connector ? dig_connector->dp_lane_count : 0);
 	seq_printf(m, "dp_clock: %d\n",
