@@ -43,15 +43,13 @@ struct ps4_wdt_priv {
 
 static int ps4_wdt_ping(struct watchdog_device *wdd)
 {
-	u8 cmd[] = { 0, 0, 2, 0, 1, 0 };
-	u8 reply[0x20];
-	int ret;
-
-	ret = apcie_icc_cmd(4, 1, cmd, sizeof(cmd), reply, sizeof(reply));
-	if (ret < 0)
-		return ret;
-
-	return 0;
+	/*
+	 * The currently known ICC 0x04/0x01 payloads are the same reset/power
+	 * control commands used by icc_shutdown()/icc_reboot(). Until a real
+	 * watchdog keepalive packet is identified, refuse to arm the watchdog
+	 * instead of risking an unintended power transition from /dev/watchdog.
+	 */
+	return -EOPNOTSUPP;
 }
 
 static int ps4_wdt_start(struct watchdog_device *wdd)
@@ -118,6 +116,8 @@ static int ps4_wdt_probe(struct platform_device *pdev)
 
 	dev_info(&pdev->dev, "PS4 watchdog timer registered (timeout=%ds)\n",
 		 timeout);
+	dev_warn(&pdev->dev,
+		 "watchdog keepalive ICC command is not identified yet; start/ping is disabled\n");
 
 	return 0;
 }

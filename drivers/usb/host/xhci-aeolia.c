@@ -521,6 +521,8 @@ static int xhci_aeolia_suspend(struct device *dev)
 	for (idx = 0; idx < NR_DEVICES; idx++) {
 		if(pdev->device != PCI_DEVICE_ID_SONY_AEOLIA_XHCI && idx == 1)
 			continue;
+		if (!axhci->hcd[idx])
+			continue;
 		xhci = hcd_to_xhci(axhci->hcd[idx]);
 		retval = xhci_suspend(xhci, device_may_wakeup(dev));
 		if (retval < 0)
@@ -530,6 +532,10 @@ static int xhci_aeolia_suspend(struct device *dev)
 
 resume:
 	while (idx--) {
+		if (pdev->device != PCI_DEVICE_ID_SONY_AEOLIA_XHCI && idx == 1)
+			continue;
+		if (!axhci->hcd[idx])
+			continue;
 		xhci = hcd_to_xhci(axhci->hcd[idx]);
 		xhci_resume(xhci, 0);
 	}
@@ -546,6 +552,8 @@ static int xhci_aeolia_resume(struct device *dev)
 
 	for (idx = 0; idx < NR_DEVICES; idx++) {
  		if(pdev->device != PCI_DEVICE_ID_SONY_AEOLIA_XHCI && idx == 1)
+			continue;
+		if (!axhci->hcd[idx])
 			continue;
 		xhci = hcd_to_xhci(axhci->hcd[idx]);
 		retval = xhci_resume(xhci, 0);

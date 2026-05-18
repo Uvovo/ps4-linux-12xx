@@ -535,6 +535,7 @@ extern bool apcie_initialized;
 static int apcie_probe(struct pci_dev *dev, const struct pci_device_id *id) {
 	struct apcie_dev *sc;
 	int ret;
+	int i;
 
 	dev_dbg(&dev->dev, "apcie_probe()\n");
 
@@ -553,6 +554,8 @@ static int apcie_probe(struct pci_dev *dev, const struct pci_device_id *id) {
 	}
 	sc->pdev = dev;
 	memset(sc->irq_map, -1, sizeof(sc->irq_map));
+	for (i = 0; i < APCIE_NR_UARTS; i++)
+		sc->serial_line[i] = -1;
 	pci_set_drvdata(dev, sc);
 
 	// eMMC ... unused?
@@ -612,6 +615,7 @@ static void apcie_remove(struct pci_dev *dev) {
 	struct apcie_dev *sc;
 	sc = pci_get_drvdata(dev);
 
+	apcie_initialized = false;
 	apcie_icc_remove(sc);
 	apcie_uart_remove(sc);
 	apcie_glue_remove(sc);
