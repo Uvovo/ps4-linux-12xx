@@ -628,8 +628,13 @@ static int cik_sdma_ring_test_ring(struct amdgpu_ring *ring)
 	if (r)
 		goto error_free_wb;
 
-	/* The SDMA_OPCODE_WRITE opcode is broken in the ring on Liverpool */
-	if (adev->asic_type == CHIP_LIVERPOOL) {
+	/*
+	 * SDMA_OPCODE_WRITE is broken in the ring on PS4 APUs.
+	 * Gladius (PS4 Pro) is still GFX7 / Sea Islands and ships the same
+	 * custom CIK SDMA IP as Liverpool — apply the workaround to both.
+	 */
+	if (adev->asic_type == CHIP_LIVERPOOL ||
+	    adev->asic_type == CHIP_GLADIUS) {
 		amdgpu_ring_write(ring, SDMA_PACKET(SDMA_OPCODE_CONSTANT_FILL, 0, SDMA_CONSTANT_FILL_EXTRA_SIZE(2)));
 		amdgpu_ring_write(ring, lower_32_bits(gpu_addr));
 		amdgpu_ring_write(ring, upper_32_bits(gpu_addr));
