@@ -2341,6 +2341,9 @@ gfx_v7_0_write_harvested_raster_configs(struct amdgpu_device *adev,
 
 		/* GRBM_GFX_INDEX has a different offset on CI+ */
 		gfx_v7_0_select_se_sh(adev, se, 0xffffffff, 0xffffffff, 0);
+		dev_info(adev->dev,
+			 "PS4 harvested_raster: SE%u raster_config=0x%08x raster_config_1=0x%08x\n",
+			 se, raster_config_se, raster_config_1);
 		WREG32(mmPA_SC_RASTER_CONFIG, raster_config_se);
 		WREG32(mmPA_SC_RASTER_CONFIG_1, raster_config_1);
 	}
@@ -2371,6 +2374,10 @@ static void gfx_v7_0_setup_rb(struct amdgpu_device *adev)
 		for (j = 0; j < adev->gfx.config.max_sh_per_se; j++) {
 			gfx_v7_0_select_se_sh(adev, i, j, 0xffffffff, 0);
 			data = gfx_v7_0_get_rb_active_bitmap(adev);
+			dev_info(adev->dev,
+				 "PS4 setup_rb: SE%d SH%d rb_active=0x%x CC_RB_BACKEND_DISABLE=0x%08x GC_USER_RB_BACKEND_DISABLE=0x%08x\n",
+				 i, j, data, RREG32(mmCC_RB_BACKEND_DISABLE),
+				 RREG32(mmGC_USER_RB_BACKEND_DISABLE));
 			active_rbs |= data << ((i * adev->gfx.config.max_sh_per_se + j) *
 					       rb_bitmap_width_per_sh);
 		}
@@ -2384,6 +2391,16 @@ static void gfx_v7_0_setup_rb(struct amdgpu_device *adev)
 			     adev->gfx.config.max_shader_engines, 16);
 
 	gfx_v7_0_raster_config(adev, &raster_config, &raster_config_1);
+
+	dev_info(adev->dev,
+		 "PS4 setup_rb: max_se=%u backend_enable_mask=0x%08x num_rbs=%u num_rb_pipes=%u path=%s raster=0x%08x/0x%08x gb_addr=0x%08x\n",
+		 adev->gfx.config.max_shader_engines,
+		 adev->gfx.config.backend_enable_mask,
+		 adev->gfx.config.num_rbs, num_rb_pipes,
+		 (!adev->gfx.config.backend_enable_mask ||
+		  adev->gfx.config.num_rbs >= num_rb_pipes) ? "direct" : "HARVESTED",
+		 raster_config, raster_config_1,
+		 adev->gfx.config.gb_addr_config);
 
 	if (!adev->gfx.config.backend_enable_mask ||
 			adev->gfx.config.num_rbs >= num_rb_pipes) {
@@ -2502,6 +2519,10 @@ static void gfx_v7_0_constants_init(struct amdgpu_device *adev)
 	WREG32(mmGB_ADDR_CONFIG, adev->gfx.config.gb_addr_config);
 	WREG32(mmHDP_ADDR_CONFIG, adev->gfx.config.gb_addr_config);
 	WREG32(mmDMIF_ADDR_CALC, adev->gfx.config.gb_addr_config);
+
+	dev_info(adev->dev,
+		 "PS4 constants_init: wrote GB_ADDR_CONFIG=0x%08x readback=0x%08x\n",
+		 adev->gfx.config.gb_addr_config, RREG32(mmGB_ADDR_CONFIG));
 
 	gfx_v7_0_tiling_mode_table_init(adev);
 
@@ -4982,6 +5003,14 @@ static void gfx_v7_0_gpu_early_init(struct amdgpu_device *adev)
 		break;
 	}
 	adev->gfx.config.gb_addr_config = gb_addr_config;
+
+	dev_info(adev->dev,
+		 "PS4 gfx cfg: asic=%d max_se=%u sh_per_se=%u cu_per_sh=%u backends_per_se=%u tcc=%u gb_addr_config=0x%08x\n",
+		 adev->asic_type, adev->gfx.config.max_shader_engines,
+		 adev->gfx.config.max_sh_per_se, adev->gfx.config.max_cu_per_sh,
+		 adev->gfx.config.max_backends_per_se,
+		 adev->gfx.config.max_texture_channel_caches,
+		 adev->gfx.config.gb_addr_config);
 }
 
 static int gfx_v7_0_compute_ring_init(struct amdgpu_device *adev, int ring_id,
@@ -5771,6 +5800,9 @@ static void gfx_v7_0_get_cu_info(struct amdgpu_device *adev)
 				mask <<= 1;
 			}
 			active_cu_number += counter;
+			dev_info(adev->dev,
+				 "PS4 cu_info: SE%d SH%d cu_active_bitmap=0x%08x cu_count=%d\n",
+				 i, j, bitmap, counter);
 			if (i < 2 && j < 2)
 				ao_cu_mask |= (ao_bitmap << (i * 16 + j * 8));
 			cu_info->ao_cu_bitmap[i][j] = ao_bitmap;
