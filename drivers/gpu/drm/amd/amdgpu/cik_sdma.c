@@ -629,7 +629,8 @@ static int cik_sdma_ring_test_ring(struct amdgpu_ring *ring)
 		goto error_free_wb;
 
 	/* The SDMA_OPCODE_WRITE opcode is broken in the ring on Liverpool */
-	if (adev->asic_type == CHIP_LIVERPOOL) {
+	if (adev->asic_type == CHIP_LIVERPOOL ||
+	    adev->asic_type == CHIP_GLADIUS) {
 		amdgpu_ring_write(ring, SDMA_PACKET(SDMA_OPCODE_CONSTANT_FILL, 0, SDMA_CONSTANT_FILL_EXTRA_SIZE(2)));
 		amdgpu_ring_write(ring, lower_32_bits(gpu_addr));
 		amdgpu_ring_write(ring, upper_32_bits(gpu_addr));
