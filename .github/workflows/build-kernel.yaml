@@ -1,0 +1,107 @@
+name: Build Kernel
+run-name: Build Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      format:
+        description: 'Package format'
+        default: 'all'
+        type: choice
+        options: [deb, arch, all]
+  workflow_call: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: write
+    env:
+      CCACHE_DIR: ~/.ccache
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+
+      - name: Checkout image builder
+        uses: actions/checkout@v4
+        with:
+          repository: ps5-linux/ps5-linux-image
+          path: image
+          ref: main
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            ccache bc bison flex \
+            libssl-dev libelf-dev libncurses-dev \
+            dwarves pahole gcc g++ make binutils \
+            dpkg-dev fakeroot zstd lzma \
+            git curl wget ca-certificates
+
+      - name: Set up swap space
+        uses: pierotofy/set-swap-space@fc79b3f67fa8a838184ce84a674ca12238d2c761
+        with:
+          swap-size-gb: 16
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
+      - name: Build kernel
+        run: |
+          FORMAT="${{ inputs.format || 'all' }}"
+          bash image/build_image.sh --kernel-only --distro "$FORMAT"
+
+      - name: Read kernel version
+        id: version
+        run: |
+          kver=$(cat image/linux-bin/VERSION)
+          sha=$(git rev-parse --short HEAD)
+          ts=$(date -u +%Y%m%d-%H%M%S)
+          echo "kver=$kver"   >> "$GITHUB_OUTPUT"
+          echo "sha=$sha"     >> "$GITHUB_OUTPUT"
+          echo "ts=$ts"       >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ steps.version.outputs.kver }}-${{ steps.version.outputs.sha }}
+          path: |
+            image/linux-bin/*.deb
+            image/linux-bin/*.pkg.tar.zst
+          retention-days: 7
+
+      - name: Compute checksums
+        id: sha
+        run: |
+          {
+            echo 'sums<<SHAEOF'
+            sha256sum image/linux-bin/*.deb image/linux-bin/*.pkg.tar.zst \
+              | sed 's|image/linux-bin/||'
+            echo 'SHAEOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: kernel-${{ steps.version.outputs.kver }}-${{ steps.version.outputs.sha }}
+          name: Kernel ${{ steps.version.outputs.kver }} (${{ steps.version.outputs.sha }})
+          body: |
+            PS5 Linux kernel packages for **${{ steps.version.outputs.kver }}**.
+            Commit: [`${{ steps.version.outputs.sha }}`](https://github.com/${{ github.repository }}/commit/${{ steps.version.outputs.sha }})
+            ```
+            ${{ steps.sha.outputs.sums }}
+            ```
+          files: |
+            image/linux-bin/*.deb
+            image/linux-bin/*.pkg.tar.zst
+          make_latest: true
