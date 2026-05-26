@@ -80,6 +80,10 @@
 #include <linux/component.h>
 #include <linux/sort.h>
 
+#ifdef CONFIG_X86_PS5
+#include <linux/ps5.h>
+#endif
+
 #include <drm/drm_privacy_screen_consumer.h>
 #include <drm/display/drm_dp_mst_helper.h>
 #include <drm/display/drm_hdmi_helper.h>
@@ -3007,7 +3011,10 @@ static int dm_hw_init(struct amdgpu_ip_block *ip_block)
 	r = amdgpu_dm_init(adev);
 	if (r)
 		return r;
+#ifndef CONFIG_X86_PS5
+	/* HPD is not supported. */
 	amdgpu_dm_hpd_init(adev);
+#endif
 
 	r = dm_oem_i2c_hw_init(adev);
 	if (r)
@@ -3028,7 +3035,10 @@ static int dm_hw_fini(struct amdgpu_ip_block *ip_block)
 {
 	struct amdgpu_device *adev = ip_block->adev;
 
+#ifndef CONFIG_X86_PS5
+	/* HPD is not supported. */
 	amdgpu_dm_hpd_fini(adev);
+#endif
 
 	amdgpu_dm_irq_fini(adev);
 	amdgpu_dm_fini(adev);
@@ -6809,6 +6819,12 @@ static void fill_stream_properties_from_drm_display_mode(
 
 	stream->output_color_space = get_output_color_space(timing_out, connector_state);
 	stream->content_type = get_output_content_type(connector_state);
+
+#ifdef CONFIG_X86_PS5
+	/* Hardcode RGB888. */
+	// timing_out->pixel_encoding = PIXEL_ENCODING_RGB;
+	// timing_out->display_color_depth = COLOR_DEPTH_888;
+#endif
 }
 
 static void fill_audio_info(struct audio_info *audio_info,
@@ -8197,6 +8213,11 @@ enum drm_mode_status amdgpu_dm_connector_mode_valid(struct drm_connector *connec
 	 * here via the amdgpu_dm_connector_helper_funcs
 	 */
 	struct amdgpu_dm_connector *aconnector = to_amdgpu_dm_connector(connector);
+
+#ifdef CONFIG_X86_PS5
+	if (!isHdmiModeValid(mode, amdgpu_force_1080p))
+		return MODE_ERROR;
+#endif
 
 	if ((mode->flags & DRM_MODE_FLAG_INTERLACE) ||
 			(mode->flags & DRM_MODE_FLAG_DBLSCAN))
@@ -10458,6 +10479,9 @@ static void amdgpu_dm_commit_streams(struct drm_atomic_state *state,
 				      new_crtc_state, i) {
 		struct amdgpu_crtc *acrtc = to_amdgpu_crtc(crtc);
 
+#ifdef CONFIG_X86_PS5
+		dm_new_crtc_state = to_dm_crtc_state(new_crtc_state);
+#endif
 		dm_old_crtc_state = to_dm_crtc_state(old_crtc_state);
 
 		if (old_crtc_state->active &&
@@ -10465,6 +10489,11 @@ static void amdgpu_dm_commit_streams(struct drm_atomic_state *state,
 		     drm_atomic_crtc_needs_modeset(new_crtc_state))) {
 			manage_dm_interrupts(adev, acrtc, NULL);
 			dc_stream_release(dm_old_crtc_state->stream);
+#ifdef CONFIG_X86_PS5
+			if (dm_new_crtc_state->stream && dc_is_dp_signal(dm_new_crtc_state->stream->signal)) {
+				sceHdmiInitVideoConfig();
+			}
+#endif
 		}
 	}
 
@@ -11035,6 +11064,22 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_state *state)
 			dc_stream_retain(dm_new_crtc_state->stream);
 			acrtc->dm_irq_params.stream = dm_new_crtc_state->stream;
 			manage_dm_interrupts(adev, acrtc, dm_new_crtc_state);
+#ifdef CONFIG_X86_PS5
+			if (dm_new_crtc_state->stream && dc_is_dp_signal(dm_new_crtc_state->stream->signal)) {
+				struct dc_stream_state *stream = dm_new_crtc_state->stream;
+				int channels = 0;
+
+				for (i = 0; i < stream->audio_info.mode_count; i++) {
+					if (stream->audio_info.modes[i].channel_count > channels)
+						channels = stream->audio_info.modes[i].channel_count;
+				}
+
+				sceHdmiSetVideoConfig(&new_crtc_state->mode);
+				sceHdmiDeviceSetVideoMute(0);
+				sceHdmiSetAudioConfig(channels);
+				sceHdmiSetAudioMute(0);
+			}
+#endif
 		}
 		/* Handle vrr on->off / off->on transitions */
 		amdgpu_dm_handle_vrr_transition(dm_old_crtc_state, dm_new_crtc_state);

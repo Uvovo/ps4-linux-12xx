@@ -271,6 +271,10 @@ extern int amdgpu_user_queue;
 
 extern uint amdgpu_hdmi_hpd_debounce_delay_ms;
 
+#ifdef CONFIG_X86_PS5
+extern int amdgpu_force_1080p;
+#endif
+
 #define AMDGPU_VM_MAX_NUM_CTX			4096
 #define AMDGPU_SG_THRESHOLD			(256*1024*1024)
 #define AMDGPU_WAIT_IDLE_TIMEOUT_IN_MS	        3000

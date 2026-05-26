@@ -986,6 +986,11 @@ void dcn10_link_encoder_enable_dp_output(
 	struct bp_transmitter_control cntl = { 0 };
 	enum bp_result result;
 
+#ifdef CONFIG_X86_PS5
+	/* Ignore this to prevent link training failure. */
+	return;
+#endif
+
 	/* Enable the PHY */
 
 	/* number_of_lanes is used for pixel clock adjust,
@@ -1064,6 +1069,11 @@ void dcn10_link_encoder_disable_output(
 	struct dcn10_link_encoder *enc10 = TO_DCN10_LINK_ENC(enc);
 	struct bp_transmitter_control cntl = { 0 };
 	enum bp_result result;
+
+#ifdef CONFIG_X86_PS5
+	/* Ignore this to prevent link training failure. */
+	return;
+#endif
 
 	if (enc->funcs->is_dig_enabled && !enc->funcs->is_dig_enabled(enc)) {
 		/* OF_SKIP_POWER_DOWN_INACTIVE_ENCODER */

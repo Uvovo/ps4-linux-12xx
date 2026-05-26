@@ -112,7 +112,11 @@ EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_host);
  */
 #ifdef CONFIG_X86_64
 static
+#ifdef CONFIG_X86_PS5
+u64 __read_mostly efer_reserved_bits = ~((u64)(EFER_SCE | EFER_LME | EFER_LMA | EFER_NDA));
+#else
 u64 __read_mostly efer_reserved_bits = ~((u64)(EFER_SCE | EFER_LME | EFER_LMA));
+#endif
 #else
 static u64 __read_mostly efer_reserved_bits = ~((u64)EFER_SCE);
 #endif

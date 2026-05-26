@@ -2344,6 +2344,11 @@ void amdgpu_gfx_profile_ring_begin_use(struct amdgpu_ring *ring)
 	enum PP_SMC_POWER_PROFILE profile;
 	int r;
 
+#ifdef CONFIG_X86_PS5
+	/* DPM is not supported. */
+	return;
+#endif
+
 	if (amdgpu_dpm_is_overdrive_enabled(adev))
 		return;
 
@@ -2378,6 +2383,11 @@ void amdgpu_gfx_profile_ring_begin_use(struct amdgpu_ring *ring)
 void amdgpu_gfx_profile_ring_end_use(struct amdgpu_ring *ring)
 {
 	struct amdgpu_device *adev = ring->adev;
+
+#ifdef CONFIG_X86_PS5
+	/* DPM is not supported. */
+	return;
+#endif
 
 	if (amdgpu_dpm_is_overdrive_enabled(adev))
 		return;

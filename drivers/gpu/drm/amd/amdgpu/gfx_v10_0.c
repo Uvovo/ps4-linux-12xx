@@ -4202,6 +4202,14 @@ static void gfx_v10_0_check_gfxoff_flag(struct amdgpu_device *adev)
 	}
 }
 
+static void gfx_v10_0_patch_ucode(const u8 *data)
+{
+	struct common_firmware_header *hdr;
+	hdr = (struct common_firmware_header *)data;
+	hdr->ucode_array_offset_bytes = cpu_to_le32(le32_to_cpu(hdr->ucode_array_offset_bytes) + 0x100);
+	hdr->ucode_size_bytes = cpu_to_le32(le32_to_cpu(hdr->ucode_size_bytes) - 0x200);
+}
+
 static int gfx_v10_0_init_microcode(struct amdgpu_device *adev)
 {
 	char fw_name[53];
@@ -4224,6 +4232,9 @@ static int gfx_v10_0_init_microcode(struct amdgpu_device *adev)
 				   "amdgpu/%s_pfp%s.bin", ucode_prefix, wks);
 	if (err)
 		goto out;
+#ifdef CONFIG_X86_PS5
+	gfx_v10_0_patch_ucode(adev->gfx.pfp_fw->data);
+#endif
 	amdgpu_gfx_cp_init_microcode(adev, AMDGPU_UCODE_ID_CP_PFP);
 
 	err = amdgpu_ucode_request(adev, &adev->gfx.me_fw,
@@ -4231,6 +4242,9 @@ static int gfx_v10_0_init_microcode(struct amdgpu_device *adev)
 				   "amdgpu/%s_me%s.bin", ucode_prefix, wks);
 	if (err)
 		goto out;
+#ifdef CONFIG_X86_PS5
+	gfx_v10_0_patch_ucode(adev->gfx.me_fw->data);
+#endif
 	amdgpu_gfx_cp_init_microcode(adev, AMDGPU_UCODE_ID_CP_ME);
 
 	err = amdgpu_ucode_request(adev, &adev->gfx.ce_fw,
@@ -4238,6 +4252,9 @@ static int gfx_v10_0_init_microcode(struct amdgpu_device *adev)
 				   "amdgpu/%s_ce%s.bin", ucode_prefix, wks);
 	if (err)
 		goto out;
+#ifdef CONFIG_X86_PS5
+	gfx_v10_0_patch_ucode(adev->gfx.ce_fw->data);
+#endif
 	amdgpu_gfx_cp_init_microcode(adev, AMDGPU_UCODE_ID_CP_CE);
 
 	if (!amdgpu_sriov_vf(adev)) {
@@ -4245,6 +4262,9 @@ static int gfx_v10_0_init_microcode(struct amdgpu_device *adev)
 		err = request_firmware(&adev->gfx.rlc_fw, fw_name, adev->dev);
 		if (err)
 			goto out;
+#ifdef CONFIG_X86_PS5
+		gfx_v10_0_patch_ucode(adev->gfx.rlc_fw->data);
+#endif
 
 		/* don't validate this firmware. There are apparently firmwares
 		 * in the wild with incorrect size in the header
@@ -4262,6 +4282,9 @@ static int gfx_v10_0_init_microcode(struct amdgpu_device *adev)
 				   "amdgpu/%s_mec%s.bin", ucode_prefix, wks);
 	if (err)
 		goto out;
+#ifdef CONFIG_X86_PS5
+	gfx_v10_0_patch_ucode(adev->gfx.mec_fw->data);
+#endif
 	amdgpu_gfx_cp_init_microcode(adev, AMDGPU_UCODE_ID_CP_MEC1);
 	amdgpu_gfx_cp_init_microcode(adev, AMDGPU_UCODE_ID_CP_MEC1_JT);
 
@@ -4269,6 +4292,9 @@ static int gfx_v10_0_init_microcode(struct amdgpu_device *adev)
 				   AMDGPU_UCODE_REQUIRED,
 				   "amdgpu/%s_mec2%s.bin", ucode_prefix, wks);
 	if (!err) {
+#ifdef CONFIG_X86_PS5
+		gfx_v10_0_patch_ucode(adev->gfx.mec2_fw->data);
+#endif
 		amdgpu_gfx_cp_init_microcode(adev, AMDGPU_UCODE_ID_CP_MEC2);
 		amdgpu_gfx_cp_init_microcode(adev, AMDGPU_UCODE_ID_CP_MEC2_JT);
 	} else {

@@ -1753,6 +1753,11 @@ static void power_down_clock_sources(struct dc *dc)
 {
 	int i;
 
+#ifdef CONFIG_X86_PS5
+	/* Ignore this to prevent blackscreen. */
+	return;
+#endif
+
 	if (dc->res_pool->dp_clock_source->funcs->cs_power_down(
 		dc->res_pool->dp_clock_source) == false)
 		dm_error("Failed to power down pll! (dp clk src)\n");
