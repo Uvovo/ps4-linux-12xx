@@ -6,7 +6,7 @@ on:
     inputs:
       format:
         description: 'Package format'
-        default: 'all'
+        default: 'deb'
         type: choice
         options: [deb, arch, all]
   workflow_call: {}
@@ -18,27 +18,23 @@ jobs:
     permissions:
       contents: write
     env:
-      CCACHE_DIR: ~/.ccache
+      CCACHE_DIR: /home/runner/.ccache
 
     steps:
-      - name: Checkout kernel source
-        uses: actions/checkout@v4
-
-      - name: Checkout image builder
+      - name: Checkout ps5-linux-patches
         uses: actions/checkout@v4
         with:
-          repository: ps5-linux/ps5-linux-image
-          path: image
-          ref: main
+          repository: ps5-linux/ps5-linux-patches
+          path: ps5-linux-patches
 
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            ccache bc bison flex \
+            ccache bc bison flex cpio \
             libssl-dev libelf-dev libncurses-dev \
             dwarves pahole gcc g++ make binutils \
-            dpkg-dev fakeroot zstd lzma \
+            dpkg-dev fakeroot rsync zstd lzma \
             git curl wget ca-certificates
 
       - name: Set up swap space
@@ -49,42 +45,76 @@ jobs:
       - name: Restore ccache
         uses: actions/cache@v4
         with:
-          path: ~/.ccache
+          path: /home/runner/.ccache
           key: ccache-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
             ccache-${{ runner.os }}-
 
-      - name: Build kernel
+      - name: Resolve kernel version from .config
+        id: kver
         run: |
-          FORMAT="${{ inputs.format || 'all' }}"
-          bash image/build_image.sh --kernel-only --distro "$FORMAT"
+          VER=$(grep -m1 "^# Linux/" ps5-linux-patches/.config | awk '{print $3}')
+          echo "Kernel version: $VER"
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
 
-      - name: Read kernel version
+      - name: Clone Linux stable
+        run: |
+          git clone --depth=1 --branch "v${{ steps.kver.outputs.ver }}" \
+            https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git \
+            linux
+
+      - name: Apply patches and copy config
+        run: |
+          cd linux
+          git apply ../ps5-linux-patches/linux.patch
+          cp ../ps5-linux-patches/.config .config
+
+      - name: Compile kernel (deb)
+        if: inputs.format == 'deb' || inputs.format == 'all' || inputs.format == ''
+        run: |
+          cd linux
+          make CC="ccache gcc" -j$(nproc) bindeb-pkg
+
+      - name: Compile kernel (arch)
+        if: inputs.format == 'arch' || inputs.format == 'all'
+        run: |
+          cd linux
+          # Build a tarball of the kernel + modules, repack as .pkg.tar.zst
+          make CC="ccache gcc" -j$(nproc)
+          make CC="ccache gcc" -j$(nproc) INSTALL_MOD_PATH=pkg/usr modules_install
+          make CC="ccache gcc" INSTALL_PATH=pkg/boot install
+          KVER=$(make -s kernelversion)
+          tar --zstd -cf "linux-ps5-${KVER}-x86_64.pkg.tar.zst" -C pkg .
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p out
+          # deb packages land one level above the linux dir
+          find . -maxdepth 1 -name '*.deb' -exec mv {} out/ \;
+          # arch tarball is inside linux/
+          find linux -maxdepth 1 -name '*.pkg.tar.zst' -exec mv {} out/ \;
+
+      - name: Read version info
         id: version
         run: |
-          kver=$(cat image/linux-bin/VERSION)
-          sha=$(git rev-parse --short HEAD)
-          ts=$(date -u +%Y%m%d-%H%M%S)
-          echo "kver=$kver"   >> "$GITHUB_OUTPUT"
-          echo "sha=$sha"     >> "$GITHUB_OUTPUT"
-          echo "ts=$ts"       >> "$GITHUB_OUTPUT"
+          PSHA=$(git -C ps5-linux-patches rev-parse --short HEAD)
+          KVER="${{ steps.kver.outputs.ver }}"
+          echo "kver=$KVER" >> "$GITHUB_OUTPUT"
+          echo "psha=$PSHA" >> "$GITHUB_OUTPUT"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-${{ steps.version.outputs.kver }}-${{ steps.version.outputs.sha }}
-          path: |
-            image/linux-bin/*.deb
-            image/linux-bin/*.pkg.tar.zst
+          name: kernel-${{ steps.version.outputs.kver }}-${{ steps.version.outputs.psha }}
+          path: out/
           retention-days: 7
 
       - name: Compute checksums
-        id: sha
+        id: checksums
         run: |
           {
             echo 'sums<<SHAEOF'
-            sha256sum image/linux-bin/*.deb image/linux-bin/*.pkg.tar.zst \
-              | sed 's|image/linux-bin/||'
+            sha256sum out/* | sed 's|out/||'
             echo 'SHAEOF'
           } >> "$GITHUB_OUTPUT"
 
@@ -93,15 +123,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          tag_name: kernel-${{ steps.version.outputs.kver }}-${{ steps.version.outputs.sha }}
-          name: Kernel ${{ steps.version.outputs.kver }} (${{ steps.version.outputs.sha }})
+          tag_name: kernel-${{ steps.version.outputs.kver }}-${{ steps.version.outputs.psha }}
+          name: Kernel ${{ steps.version.outputs.kver }} (${{ steps.version.outputs.psha }})
           body: |
             PS5 Linux kernel packages for **${{ steps.version.outputs.kver }}**.
-            Commit: [`${{ steps.version.outputs.sha }}`](https://github.com/${{ github.repository }}/commit/${{ steps.version.outputs.sha }})
+            Patches: [`${{ steps.version.outputs.psha }}`](https://github.com/ps5-linux/ps5-linux-patches/commit/${{ steps.version.outputs.psha }})
             ```
-            ${{ steps.sha.outputs.sums }}
+            ${{ steps.checksums.outputs.sums }}
             ```
-          files: |
-            image/linux-bin/*.deb
-            image/linux-bin/*.pkg.tar.zst
+          files: out/*
           make_latest: true
