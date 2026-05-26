@@ -299,6 +299,25 @@ config AHCI_QORIQ
 
 	  If unsure, say N.
 
+config AHCI_SALINA
+	tristate "Sony PlayStation 5 Salina SATA / BD-ROM AHCI support"
+	depends on PCI
+	depends on X86_PS5 || COMPILE_TEST
+	select SATA_HOST
+	help
+	  This option enables support for the PlayStation 5 "Salina" SATA
+	  AHCI controller (PCI 104d:9105 / 104d:9106) that fronts the
+	  internal Blu-ray drive. The driver maps the AHCI ABAR and the
+	  shared Salina Glue (104d:9107) BAR2/BAR4 windows, runs the
+	  PS5-specific SATA SerDes/PHY bringup, then hands off to libahci.
+
+	  Encrypted commercial PS5 game discs additionally require the
+	  SblDiscid PSP handshake which lives outside this driver; this
+	  only brings up the AHCI read path. Unencrypted media (audio CD,
+	  data DVD, homebrew BD-R, ISO) should appear at /dev/sr0.
+
+	  If unsure, say N.
+
 config SATA_FSL
 	tristate "Freescale 3.0Gbps SATA support"
 	depends on FSL_SOC || COMPILE_TEST
