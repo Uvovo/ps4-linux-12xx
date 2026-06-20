@@ -7,7 +7,7 @@ on:
       profile:
         description: "Build Profile"
         required: true
-        default: "Server"
+        default: "General"
         type: choice
         options:
           - Server
@@ -23,7 +23,7 @@ on:
       southbridge:
         description: "PS4 Southbridge Target"
         required: true
-        default: "AeoliaBelize"
+        default: "Baikal"
         type: choice
         options:
           - AeoliaBelize
